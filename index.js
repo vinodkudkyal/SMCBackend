@@ -1,21 +1,306 @@
+// const express = require("express");
+// const mongoose = require("mongoose");
+// const cors = require("cors");
+
+// const app = express();
+// app.use(cors());
+// app.use(express.json()); // body-parser functionality
+
+// // ---------------- MONGOOSE CONNECTION ----------------
+// // Replace with your own MongoDB Atlas connection string if needed
+// const MONGO_URI = "mongodb+srv://adarshanna69_db_user:nvr53vg7ZicinMRc@cluster0.obkoytt.mongodb.net/nagarshuddhi?retryWrites=true&w=majority";
+
+// mongoose
+//   .connect(MONGO_URI, {
+//     // current mongoose uses these by default; kept for clarity
+//     useNewUrlParser: true,
+//     useUnifiedTopology: true,
+//   })
+//   .then(() => console.log("✅ Connected to MongoDB"))
+//   .catch((err) => {
+//     console.error("❌ MongoDB connection error:", err);
+//     process.exit(1);
+//   });
+
+// // ---------------- SCHEMAS & MODELS ----------------
+
+// // User schema (admins / generic users)
+// const userSchema = new mongoose.Schema({
+//   email: String,
+//   password: String, // ⚠️ For production, hash passwords with bcrypt
+//   role: String,
+//   name: String,
+// });
+// const User = mongoose.model("User", userSchema);
+
+// // Sweeper schema
+// const sweeperSchema = new mongoose.Schema({
+//   name: { type: String, required: true },
+//   email: { type: String, required: true, unique: true },
+//   password: { type: String, required: true },
+//   geofence: { type: Array, default: [] },
+//   checkpoints: { type: Array, default: [] },
+// });
+// const Sweeper = mongoose.model("Sweeper", sweeperSchema);
+
+// // Face data schema (store face embeddings / JSON as string)
+// const faceDataSchema = new mongoose.Schema({
+//   sweeperId: { type: mongoose.Schema.Types.ObjectId, ref: "Sweeper", required: true },
+//   name: { type: String, required: true },
+//   faceData: { type: String, required: true }, // JSON/stringified embeddings or metadata
+//   createdAt: { type: Date, default: Date.now },
+// });
+// const FaceData = mongoose.model("FaceData", faceDataSchema);
+
+// // Attendance schema
+// const attendanceSchema = new mongoose.Schema({
+//   sweeperId: { type: mongoose.Schema.Types.ObjectId, ref: "Sweeper", required: true },
+//   date: { type: Date, required: true },
+//   location: {
+//     latitude: Number,
+//     longitude: Number,
+//   },
+//   createdAt: { type: Date, default: Date.now },
+// });
+// const Attendance = mongoose.model("Attendance", attendanceSchema);
+
+// // ---------------- ROUTES ----------------
+
+// // Health
+// app.get("/", (req, res) => {
+//   res.json({ success: true, message: "Sweeper Tracker API running" });
+// });
+
+// // LOGIN - supports admin (User) and sweeper (Sweeper)
+// app.post("/login", async (req, res) => {
+//   const { email, password } = req.body;
+//   try {
+//     // Check admin user first
+//     let user = await User.findOne({ email, password }).lean();
+//     if (user) {
+//       return res.json({ success: true, role: user.role, name: user.name, id: user._id });
+//     }
+
+//     // Check sweeper user
+//     let sweeper = await Sweeper.findOne({ email, password }).lean();
+//     if (sweeper) {
+//       return res.json({ success: true, role: "sweeper", name: sweeper.name, id: sweeper._id });
+//     }
+
+//     return res.status(401).json({ success: false, message: "Invalid credentials" });
+//   } catch (err) {
+//     return res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // FETCH ALL SWEEPERS
+// app.get("/sweepers", async (req, res) => {
+//   try {
+//     const sweepers = await Sweeper.find().lean();
+//     return res.json({ success: true, sweepers });
+//   } catch (err) {
+//     return res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // ADD NEW SWEEPER
+// app.post("/sweepers", async (req, res) => {
+//   const { name, email, password } = req.body;
+//   try {
+//     const existing = await Sweeper.findOne({ email });
+//     if (existing) {
+//       return res.status(400).json({ success: false, message: "Email already exists" });
+//     }
+//     const sweeper = new Sweeper({
+//       name,
+//       email,
+//       password, // ⚠️ In production, hash this with bcrypt
+//       geofence: [],
+//       checkpoints: [],
+//     });
+//     await sweeper.save();
+//     return res.json({ success: true, sweeper });
+//   } catch (err) {
+//     return res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // DELETE SWEEPER
+// app.delete("/sweepers/:id", async (req, res) => {
+//   try {
+//     const sweeper = await Sweeper.findByIdAndDelete(req.params.id);
+//     if (!sweeper) {
+//       return res.status(404).json({ success: false, message: "Sweeper not found" });
+//     }
+//     // Also remove faceData and attendance optionally
+//     await FaceData.deleteOne({ sweeperId: req.params.id });
+//     await Attendance.deleteMany({ sweeperId: req.params.id });
+//     return res.json({ success: true, message: "Sweeper deleted successfully" });
+//   } catch (err) {
+//     return res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // GET SWEEPER ASSIGNMENT (geofence + checkpoints)
+// app.get("/sweepers/:id/assignment", async (req, res) => {
+//   try {
+//     const sweeper = await Sweeper.findById(req.params.id).lean();
+//     if (!sweeper) {
+//       return res.status(404).json({ success: false, message: "Sweeper not found" });
+//     }
+//     return res.json({
+//       success: true,
+//       geofence: sweeper.geofence || [],
+//       checkpoints: sweeper.checkpoints || [],
+//     });
+//   } catch (err) {
+//     return res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // UPDATE SWEEPER ASSIGNMENT
+// app.put("/sweepers/:id/assignment", async (req, res) => {
+//   const { geofence, checkpoints } = req.body;
+//   try {
+//     const sweeper = await Sweeper.findByIdAndUpdate(
+//       req.params.id,
+//       { geofence: geofence || [], checkpoints: checkpoints || [] },
+//       { new: true, runValidators: true }
+//     ).lean();
+//     if (!sweeper) {
+//       return res.status(404).json({ success: false, message: "Sweeper not found" });
+//     }
+//     return res.json({ success: true, sweeper });
+//   } catch (err) {
+//     return res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // ---------------- FACE DATA ENDPOINTS ----------------
+
+// // Check if face data exists for a sweeper and return it
+// app.get("/sweepers/facedata/:id", async (req, res) => {
+//   try {
+//     const faceData = await FaceData.findOne({ sweeperId: req.params.id }).lean();
+//     return res.json({
+//       success: true,
+//       hasFaceData: !!faceData,
+//       faceData: faceData ? faceData.faceData : null,
+//     });
+//   } catch (err) {
+//     return res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // Save or update face data for a sweeper
+// app.post("/sweepers/facedata/:id", async (req, res) => {
+//   const { name, faceData } = req.body;
+//   try {
+//     // Ensure sweeper exists
+//     const sweeper = await Sweeper.findById(req.params.id);
+//     if (!sweeper) {
+//       return res.status(404).json({ success: false, message: "Sweeper not found" });
+//     }
+
+//     let existing = await FaceData.findOne({ sweeperId: req.params.id });
+//     if (existing) {
+//       existing.name = name || existing.name;
+//       existing.faceData = faceData;
+//       await existing.save();
+//       return res.json({ success: true, message: "Face data updated", faceData: existing });
+//     } else {
+//       const fd = new FaceData({
+//         sweeperId: req.params.id,
+//         name,
+//         faceData,
+//       });
+//       await fd.save();
+//       return res.json({ success: true, message: "Face data saved", faceData: fd });
+//     }
+//   } catch (err) {
+//     return res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // ---------------- ATTENDANCE ENDPOINTS ----------------
+
+// // Mark attendance (creates one record per day)
+// app.post("/sweepers/attendance", async (req, res) => {
+//   const { sweeperId, date, location } = req.body;
+//   try {
+//     const sweeper = await Sweeper.findById(sweeperId);
+//     if (!sweeper) {
+//       return res.status(404).json({ success: false, message: "Sweeper not found" });
+//     }
+
+//     // Normalize date to day boundary
+//     const providedDate = date ? new Date(date) : new Date();
+//     const dayStart = new Date(providedDate);
+//     dayStart.setHours(0, 0, 0, 0);
+//     const dayEnd = new Date(dayStart);
+//     dayEnd.setDate(dayEnd.getDate() + 1);
+
+//     const existing = await Attendance.findOne({
+//       sweeperId,
+//       date: { $gte: dayStart, $lt: dayEnd },
+//     }).lean();
+
+//     if (existing) {
+//       return res.json({ success: true, message: "Attendance already marked for today", attendance: existing });
+//     }
+
+//     const attendance = new Attendance({
+//       sweeperId,
+//       date: providedDate,
+//       location: location || {},
+//     });
+//     await attendance.save();
+//     return res.json({ success: true, attendance });
+//   } catch (err) {
+//     return res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // Get attendance history for a sweeper (optional from/to query params)
+// app.get("/sweepers/:id/attendance", async (req, res) => {
+//   try {
+//     const { from, to } = req.query;
+//     const query = { sweeperId: req.params.id };
+
+//     if (from || to) {
+//       query.date = {};
+//       if (from) query.date.$gte = new Date(from);
+//       if (to) query.date.$lte = new Date(to);
+//     }
+
+//     const attendanceHistory = await Attendance.find(query).sort({ date: -1 }).lean();
+//     return res.json({ success: true, attendanceHistory });
+//   } catch (err) {
+//     return res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // ---------------- START SERVER ----------------
+// const PORT = process.env.PORT || 3000;
+// app.listen(PORT, "0.0.0.0", () => console.log(`✅ Server running on http://0.0.0.0:${PORT}`));
+
+
+
+
+
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 
 const app = express();
 app.use(cors());
-app.use(express.json()); // body-parser functionality
+app.use(express.json()); // body-parser
 
 // ---------------- MONGOOSE CONNECTION ----------------
-// Replace with your own MongoDB Atlas connection string if needed
 const MONGO_URI = "mongodb+srv://adarshanna69_db_user:nvr53vg7ZicinMRc@cluster0.obkoytt.mongodb.net/nagarshuddhi?retryWrites=true&w=majority";
 
 mongoose
-  .connect(MONGO_URI, {
-    // current mongoose uses these by default; kept for clarity
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-  })
+  .connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log("✅ Connected to MongoDB"))
   .catch((err) => {
     console.error("❌ MongoDB connection error:", err);
@@ -24,10 +309,10 @@ mongoose
 
 // ---------------- SCHEMAS & MODELS ----------------
 
-// User schema (admins / generic users)
+// User schema (admins)
 const userSchema = new mongoose.Schema({
   email: String,
-  password: String, // ⚠️ For production, hash passwords with bcrypt
+  password: String, // ⚠️ Hash in production
   role: String,
   name: String,
 });
@@ -40,14 +325,18 @@ const sweeperSchema = new mongoose.Schema({
   password: { type: String, required: true },
   geofence: { type: Array, default: [] },
   checkpoints: { type: Array, default: [] },
+  dutyTime: {
+    start: { type: String, default: null },
+    end: { type: String, default: null },
+  },
 });
 const Sweeper = mongoose.model("Sweeper", sweeperSchema);
 
-// Face data schema (store face embeddings / JSON as string)
+// Face data schema
 const faceDataSchema = new mongoose.Schema({
   sweeperId: { type: mongoose.Schema.Types.ObjectId, ref: "Sweeper", required: true },
   name: { type: String, required: true },
-  faceData: { type: String, required: true }, // JSON/stringified embeddings or metadata
+  faceData: { type: String, required: true }, // JSON embeddings
   createdAt: { type: Date, default: Date.now },
 });
 const FaceData = mongoose.model("FaceData", faceDataSchema);
@@ -66,26 +355,20 @@ const Attendance = mongoose.model("Attendance", attendanceSchema);
 
 // ---------------- ROUTES ----------------
 
-// Health
+// Health check
 app.get("/", (req, res) => {
   res.json({ success: true, message: "Sweeper Tracker API running" });
 });
 
-// LOGIN - supports admin (User) and sweeper (Sweeper)
+// LOGIN (Admin + Sweeper)
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
   try {
-    // Check admin user first
     let user = await User.findOne({ email, password }).lean();
-    if (user) {
-      return res.json({ success: true, role: user.role, name: user.name, id: user._id });
-    }
+    if (user) return res.json({ success: true, role: user.role, name: user.name, id: user._id });
 
-    // Check sweeper user
     let sweeper = await Sweeper.findOne({ email, password }).lean();
-    if (sweeper) {
-      return res.json({ success: true, role: "sweeper", name: sweeper.name, id: sweeper._id });
-    }
+    if (sweeper) return res.json({ success: true, role: "sweeper", name: sweeper.name, id: sweeper._id });
 
     return res.status(401).json({ success: false, message: "Invalid credentials" });
   } catch (err) {
@@ -93,7 +376,7 @@ app.post("/login", async (req, res) => {
   }
 });
 
-// FETCH ALL SWEEPERS
+// GET ALL SWEEPERS
 app.get("/sweepers", async (req, res) => {
   try {
     const sweepers = await Sweeper.find().lean();
@@ -103,21 +386,14 @@ app.get("/sweepers", async (req, res) => {
   }
 });
 
-// ADD NEW SWEEPER
+// ADD SWEEPER
 app.post("/sweepers", async (req, res) => {
   const { name, email, password } = req.body;
   try {
     const existing = await Sweeper.findOne({ email });
-    if (existing) {
-      return res.status(400).json({ success: false, message: "Email already exists" });
-    }
-    const sweeper = new Sweeper({
-      name,
-      email,
-      password, // ⚠️ In production, hash this with bcrypt
-      geofence: [],
-      checkpoints: [],
-    });
+    if (existing) return res.status(400).json({ success: false, message: "Email already exists" });
+
+    const sweeper = new Sweeper({ name, email, password });
     await sweeper.save();
     return res.json({ success: true, sweeper });
   } catch (err) {
@@ -129,10 +405,8 @@ app.post("/sweepers", async (req, res) => {
 app.delete("/sweepers/:id", async (req, res) => {
   try {
     const sweeper = await Sweeper.findByIdAndDelete(req.params.id);
-    if (!sweeper) {
-      return res.status(404).json({ success: false, message: "Sweeper not found" });
-    }
-    // Also remove faceData and attendance optionally
+    if (!sweeper) return res.status(404).json({ success: false, message: "Sweeper not found" });
+
     await FaceData.deleteOne({ sweeperId: req.params.id });
     await Attendance.deleteMany({ sweeperId: req.params.id });
     return res.json({ success: true, message: "Sweeper deleted successfully" });
@@ -141,24 +415,19 @@ app.delete("/sweepers/:id", async (req, res) => {
   }
 });
 
-// GET SWEEPER ASSIGNMENT (geofence + checkpoints)
+// GET ASSIGNMENT
 app.get("/sweepers/:id/assignment", async (req, res) => {
   try {
     const sweeper = await Sweeper.findById(req.params.id).lean();
-    if (!sweeper) {
-      return res.status(404).json({ success: false, message: "Sweeper not found" });
-    }
-    return res.json({
-      success: true,
-      geofence: sweeper.geofence || [],
-      checkpoints: sweeper.checkpoints || [],
-    });
+    if (!sweeper) return res.status(404).json({ success: false, message: "Sweeper not found" });
+
+    return res.json({ success: true, geofence: sweeper.geofence || [], checkpoints: sweeper.checkpoints || [] });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// UPDATE SWEEPER ASSIGNMENT
+// UPDATE ASSIGNMENT
 app.put("/sweepers/:id/assignment", async (req, res) => {
   const { geofence, checkpoints } = req.body;
   try {
@@ -167,18 +436,32 @@ app.put("/sweepers/:id/assignment", async (req, res) => {
       { geofence: geofence || [], checkpoints: checkpoints || [] },
       { new: true, runValidators: true }
     ).lean();
-    if (!sweeper) {
-      return res.status(404).json({ success: false, message: "Sweeper not found" });
-    }
+
+    if (!sweeper) return res.status(404).json({ success: false, message: "Sweeper not found" });
     return res.json({ success: true, sweeper });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// ---------------- FACE DATA ENDPOINTS ----------------
+// UPDATE DUTY TIME
+app.put("/sweepers/:id/duty-time", async (req, res) => {
+  const { start, end } = req.body;
+  try {
+    const sweeper = await Sweeper.findByIdAndUpdate(
+      req.params.id,
+      { dutyTime: { start: start || null, end: end || null } },
+      { new: true }
+    ).lean();
 
-// Check if face data exists for a sweeper and return it
+    if (!sweeper) return res.status(404).json({ success: false, message: "Sweeper not found" });
+    return res.json({ success: true, dutyTime: sweeper.dutyTime });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// FACE DATA
 app.get("/sweepers/facedata/:id", async (req, res) => {
   try {
     const faceData = await FaceData.findOne({ sweeperId: req.params.id }).lean();
@@ -192,15 +475,11 @@ app.get("/sweepers/facedata/:id", async (req, res) => {
   }
 });
 
-// Save or update face data for a sweeper
 app.post("/sweepers/facedata/:id", async (req, res) => {
   const { name, faceData } = req.body;
   try {
-    // Ensure sweeper exists
     const sweeper = await Sweeper.findById(req.params.id);
-    if (!sweeper) {
-      return res.status(404).json({ success: false, message: "Sweeper not found" });
-    }
+    if (!sweeper) return res.status(404).json({ success: false, message: "Sweeper not found" });
 
     let existing = await FaceData.findOne({ sweeperId: req.params.id });
     if (existing) {
@@ -209,11 +488,7 @@ app.post("/sweepers/facedata/:id", async (req, res) => {
       await existing.save();
       return res.json({ success: true, message: "Face data updated", faceData: existing });
     } else {
-      const fd = new FaceData({
-        sweeperId: req.params.id,
-        name,
-        faceData,
-      });
+      const fd = new FaceData({ sweeperId: req.params.id, name, faceData });
       await fd.save();
       return res.json({ success: true, message: "Face data saved", faceData: fd });
     }
@@ -222,18 +497,13 @@ app.post("/sweepers/facedata/:id", async (req, res) => {
   }
 });
 
-// ---------------- ATTENDANCE ENDPOINTS ----------------
-
-// Mark attendance (creates one record per day)
+// ATTENDANCE
 app.post("/sweepers/attendance", async (req, res) => {
   const { sweeperId, date, location } = req.body;
   try {
     const sweeper = await Sweeper.findById(sweeperId);
-    if (!sweeper) {
-      return res.status(404).json({ success: false, message: "Sweeper not found" });
-    }
+    if (!sweeper) return res.status(404).json({ success: false, message: "Sweeper not found" });
 
-    // Normalize date to day boundary
     const providedDate = date ? new Date(date) : new Date();
     const dayStart = new Date(providedDate);
     dayStart.setHours(0, 0, 0, 0);
@@ -245,15 +515,9 @@ app.post("/sweepers/attendance", async (req, res) => {
       date: { $gte: dayStart, $lt: dayEnd },
     }).lean();
 
-    if (existing) {
-      return res.json({ success: true, message: "Attendance already marked for today", attendance: existing });
-    }
+    if (existing) return res.json({ success: true, message: "Attendance already marked", attendance: existing });
 
-    const attendance = new Attendance({
-      sweeperId,
-      date: providedDate,
-      location: location || {},
-    });
+    const attendance = new Attendance({ sweeperId, date: providedDate, location: location || {} });
     await attendance.save();
     return res.json({ success: true, attendance });
   } catch (err) {
@@ -261,7 +525,6 @@ app.post("/sweepers/attendance", async (req, res) => {
   }
 });
 
-// Get attendance history for a sweeper (optional from/to query params)
 app.get("/sweepers/:id/attendance", async (req, res) => {
   try {
     const { from, to } = req.query;
