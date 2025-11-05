@@ -7,7 +7,6 @@ app.use(cors());
 app.use(express.json()); // body-parser
 
 // ---------------- MONGOOSE CONNECTION ----------------
-// const MONGO_URI = "mongodb+srv://adarshanna69_db_user:nvr53vg7ZicinMRc@cluster0.obkoytt.mongodb.net/nagarshuddhi?retryWrites=true&w=majority";
 const MONGO_URI = "mongodb+srv://nagarshuddhismc_db_user:KU0RkVNSLcm23rkc@cluster0.7h8qa0n.mongodb.net/nagarshuddhi?retryWrites=true&w=majority&appName=Cluster0";
 
 mongoose
@@ -300,6 +299,17 @@ app.get("/geofences/:id", async (req, res) => {
     return res.status(500).json({ success: false, message: err.message });
   }
 });
+
+// ---------------- USERS (ADMINS) ----------------
+app.get("/users", async (req, res) => {
+  try {
+    const users = await User.find().lean();
+    return res.json({ success: true, users });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 
 // DELETE geofence
 app.delete("/geofences/:id", async (req, res) => {
