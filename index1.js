@@ -3,10 +3,12 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 
 const app = express();
-app.use(cors());
+app.use(cors()); // allow all origins for dev; tighten for production
 app.use(express.json()); // body-parser
 
 // ---------------- MONGOOSE CONNECTION ----------------
+// NOTE: For simplicity this uses the same hardcoded URI used previously.
+// In production you should put this in an environment variable.
 const MONGO_URI = "mongodb+srv://nagarshuddhismc_db_user:KU0RkVNSLcm23rkc@cluster0.7h8qa0n.mongodb.net/nagarshuddhi?retryWrites=true&w=majority&appName=Cluster0";
 
 mongoose
@@ -22,7 +24,7 @@ mongoose
 // User schema (admins)
 const userSchema = new mongoose.Schema({
   email: String,
-  password: String, // ⚠️ Hash in production
+  password: String, // NOTE: plaintext in DB is supported for backward compatibility here
   role: String,
   name: String,
 });
@@ -63,7 +65,7 @@ const attendanceSchema = new mongoose.Schema({
 });
 const Attendance = mongoose.model("Attendance", attendanceSchema);
 
-// ✅ NEW: Geofence schema
+// Geofence schema
 const geofenceSchema = new mongoose.Schema({
   name: { type: String, required: true },
   zone: { type: String, default: "" },
@@ -81,23 +83,27 @@ app.get("/", (req, res) => {
   res.json({ success: true, message: "Sweeper Tracker API running" });
 });
 
-// LOGIN (Admin + Sweeper)
+// LOGIN - Only admin login (no JWT, no env)
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
+  if (!email || !password) return res.status(400).json({ success: false, message: "Email and password required" });
+
   try {
-    let user = await User.findOne({ email, password }).lean();
-    if (user) return res.json({ success: true, role: user.role, name: user.name, id: user._id });
+    // Only allow users with role 'admin' to login here
+    const user = await User.findOne({ email, password, role: "admin" }).lean();
+    if (user) {
+      // Return profile object (no token)
+      return res.json({ success: true, role: "admin", name: user.name, id: user._id });
+    }
 
-    let sweeper = await Sweeper.findOne({ email, password }).lean();
-    if (sweeper) return res.json({ success: true, role: "sweeper", name: sweeper.name, id: sweeper._id });
-
-    return res.status(401).json({ success: false, message: "Invalid credentials" });
+    return res.status(401).json({ success: false, message: "Invalid admin credentials" });
   } catch (err) {
+    console.error("Login error:", err);
     return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// ---------------- SWEEPER ROUTES ----------------
+// ---------------- SWEEPER ROUTES (unchanged) ----------------
 
 // GET ALL SWEEPERS
 app.get("/sweepers", async (req, res) => {
@@ -184,7 +190,7 @@ app.put("/sweepers/:id/duty-time", async (req, res) => {
   }
 });
 
-// ---------------- FACE DATA ----------------
+// FACE DATA
 app.get("/sweepers/facedata/:id", async (req, res) => {
   try {
     const faceData = await FaceData.findOne({ sweeperId: req.params.id }).lean();
@@ -220,7 +226,7 @@ app.post("/sweepers/facedata/:id", async (req, res) => {
   }
 });
 
-// ---------------- ATTENDANCE ----------------
+// ATTENDANCE
 app.post("/sweepers/attendance", async (req, res) => {
   const { sweeperId, date, location } = req.body;
   try {
@@ -266,9 +272,7 @@ app.get("/sweepers/:id/attendance", async (req, res) => {
   }
 });
 
-// ---------------- GEOFENCE ROUTES ----------------
-
-// CREATE geofence
+// GEOFENCE ROUTES
 app.post("/geofences", async (req, res) => {
   try {
     const gf = new Geofence(req.body);
@@ -279,7 +283,6 @@ app.post("/geofences", async (req, res) => {
   }
 });
 
-// GET all geofences
 app.get("/geofences", async (req, res) => {
   try {
     const geofences = await Geofence.find().lean();
@@ -289,7 +292,6 @@ app.get("/geofences", async (req, res) => {
   }
 });
 
-// GET single geofence
 app.get("/geofences/:id", async (req, res) => {
   try {
     const gf = await Geofence.findById(req.params.id).lean();
@@ -300,18 +302,6 @@ app.get("/geofences/:id", async (req, res) => {
   }
 });
 
-// ---------------- USERS (ADMINS) ----------------
-app.get("/users", async (req, res) => {
-  try {
-    const users = await User.find().lean();
-    return res.json({ success: true, users });
-  } catch (err) {
-    return res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-
-// DELETE geofence
 app.delete("/geofences/:id", async (req, res) => {
   try {
     const gf = await Geofence.findByIdAndDelete(req.params.id);
@@ -323,5 +313,5 @@ app.delete("/geofences/:id", async (req, res) => {
 });
 
 // ---------------- START SERVER ----------------
-const PORT = process.env.PORT || 3000;
+const PORT = 3000;
 app.listen(PORT, "0.0.0.0", () => console.log(`✅ Server running on http://0.0.0.0:${PORT}`));
