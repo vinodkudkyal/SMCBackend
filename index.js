@@ -403,6 +403,24 @@ app.get("/", (req, res) => {
   res.json({ success: true, message: "Sweeper Tracker API running" });
 });
 
+
+LOGIN (Admin + Sweeper)
+app.post("/login", async (req, res) => {
+  const { email, password } = req.body;
+  try {
+    let user = await User.findOne({ email, password }).lean();
+    if (user) return res.json({ success: true, role: user.role, name: user.name, id: user._id });
+
+    let sweeper = await Sweeper.findOne({ email, password }).lean();
+    if (sweeper) return res.json({ success: true, role: "sweeper", name: sweeper.name, id: sweeper._id });
+
+    return res.status(401).json({ success: false, message: "Invalid credentials" });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+
 // LOGIN - Only admin login (no JWT, no env)
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
