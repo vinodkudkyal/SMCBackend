@@ -404,7 +404,7 @@ app.get("/", (req, res) => {
 });
 
 
-LOGIN (Admin + Sweeper)
+// LOGIN (Admin + Sweeper)
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
   try {
