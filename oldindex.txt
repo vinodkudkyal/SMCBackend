@@ -1,7 +1,6 @@
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
-const http = require("http");
 
 const app = express();
 app.use(cors()); // allow all origins for dev; tighten for production
@@ -77,28 +76,6 @@ const geofenceSchema = new mongoose.Schema({
 });
 const Geofence = mongoose.model("Geofence", geofenceSchema);
 
-// ---------------- HTTP + Socket.IO ----------------
-const server = http.createServer(app);
-const { Server } = require("socket.io");
-const io = new Server(server, {
-  cors: { origin: "*" }, // tighten in production
-});
-
-// Provide a simple info endpoint for socket clients
-io.on("connection", (socket) => {
-  console.log("🔌 socket connected:", socket.id);
-  socket.on("disconnect", () => console.log("🔌 socket disconnected:", socket.id));
-});
-
-// Helper to emit events
-function emitEvent(name, payload) {
-  try {
-    io.emit(name, payload);
-  } catch (e) {
-    console.error("Socket emit error:", e);
-  }
-}
-
 // ---------------- ROUTES ----------------
 
 // Health check
@@ -126,7 +103,7 @@ app.post("/login", async (req, res) => {
   }
 });
 
-// ---------------- SWEEPER ROUTES ----------------
+// ---------------- SWEEPER ROUTES (unchanged) ----------------
 
 // GET ALL SWEEPERS
 app.get("/sweepers", async (req, res) => {
@@ -140,17 +117,13 @@ app.get("/sweepers", async (req, res) => {
 
 // ADD SWEEPER
 app.post("/sweepers", async (req, res) => {
-  const { name, email, password, zone, status } = req.body;
+  const { name, email, password } = req.body;
   try {
     const existing = await Sweeper.findOne({ email });
     if (existing) return res.status(400).json({ success: false, message: "Email already exists" });
 
-    const sweeper = new Sweeper({ name, email, password, zone, status, dutyTime: { start: null, end: null } });
+    const sweeper = new Sweeper({ name, email, password });
     await sweeper.save();
-
-    // Emit real-time event
-    emitEvent("sweeper:added", { sweeper });
-
     return res.json({ success: true, sweeper });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
@@ -165,10 +138,6 @@ app.delete("/sweepers/:id", async (req, res) => {
 
     await FaceData.deleteOne({ sweeperId: req.params.id });
     await Attendance.deleteMany({ sweeperId: req.params.id });
-
-    // Emit real-time event
-    emitEvent("sweeper:deleted", { id: req.params.id });
-
     return res.json({ success: true, message: "Sweeper deleted successfully" });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
@@ -198,8 +167,6 @@ app.put("/sweepers/:id/assignment", async (req, res) => {
     ).lean();
 
     if (!sweeper) return res.status(404).json({ success: false, message: "Sweeper not found" });
-
-    emitEvent("sweeper:updated", { sweeper });
     return res.json({ success: true, sweeper });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
@@ -217,11 +184,7 @@ app.put("/sweepers/:id/duty-time", async (req, res) => {
     ).lean();
 
     if (!sweeper) return res.status(404).json({ success: false, message: "Sweeper not found" });
-
-    // Emit update event with updated dutyTime
-    emitEvent("sweeper:duty-time-updated", { id: req.params.id, dutyTime: sweeper.dutyTime });
-
-    return res.json({ success: true, dutyTime: sweeper.dutyTime, sweeper });
+    return res.json({ success: true, dutyTime: sweeper.dutyTime });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
@@ -285,10 +248,6 @@ app.post("/sweepers/attendance", async (req, res) => {
 
     const attendance = new Attendance({ sweeperId, date: providedDate, location: location || {} });
     await attendance.save();
-
-    // Emit attendance event for real-time updates
-    emitEvent("attendance:marked", { attendance, sweeperId });
-
     return res.json({ success: true, attendance });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
@@ -354,5 +313,8 @@ app.delete("/geofences/:id", async (req, res) => {
 });
 
 // ---------------- START SERVER ----------------
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, "0.0.0.0", () => console.log(`✅ Server + Socket.IO running on http://0.0.0.0:${PORT}`));
+const PORT = 3000;
+app.listen(PORT, "0.0.0.0", () => console.log(`✅ Server running on http://0.0.0.0:${PORT}`));
+
+
+
