@@ -801,6 +801,7 @@ app.post("/login", async (req, res) => {
   }
 });
 
+
 // ---------------- SWEEPER ROUTES ----------------
 
 // GET ALL SWEEPERS
