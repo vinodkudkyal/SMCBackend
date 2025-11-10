@@ -766,24 +766,24 @@ app.get("/", (req, res) => {
 });
 
 // LOGIN - Only admin login (no JWT, no env)
-app.post("/login", async (req, res) => {
-  const { email, password } = req.body;
-  if (!email || !password) return res.status(400).json({ success: false, message: "Email and password required" });
+// app.post("/login", async (req, res) => {
+//   const { email, password } = req.body;
+//   if (!email || !password) return res.status(400).json({ success: false, message: "Email and password required" });
 
-  try {
-    // Only allow users with role 'admin' to login here
-    const user = await User.findOne({ email, password, role: "admin" }).lean();
-    if (user) {
-      // Return profile object (no token)
-      return res.json({ success: true, role: "admin", name: user.name, id: user._id });
-    }
+//   try {
+//     // Only allow users with role 'admin' to login here
+//     const user = await User.findOne({ email, password, role: "admin" }).lean();
+//     if (user) {
+//       // Return profile object (no token)
+//       return res.json({ success: true, role: "admin", name: user.name, id: user._id });
+//     }
 
-    return res.status(401).json({ success: false, message: "Invalid admin credentials" });
-  } catch (err) {
-    console.error("Login error:", err);
-    return res.status(500).json({ success: false, message: err.message });
-  }
-});
+//     return res.status(401).json({ success: false, message: "Invalid admin credentials" });
+//   } catch (err) {
+//     console.error("Login error:", err);
+//     return res.status(500).json({ success: false, message: err.message });
+//   }
+// });
 
 // LOGIN (Admin + Sweeper)
 app.post("/login", async (req, res) => {
