@@ -657,6 +657,10 @@
 
 
 
+
+
+
+
 // const express = require("express");
 // const mongoose = require("mongoose");
 // const cors = require("cors");
@@ -1017,7 +1021,6 @@
 
 
 
-// sweeper_api.js
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
@@ -1086,19 +1089,6 @@ const attendanceSchema = new mongoose.Schema({
 });
 const Attendance = mongoose.model("Attendance", attendanceSchema);
 
-// AlarmEvent schema (new)
-const alarmEventSchema = new mongoose.Schema({
-  sweeperId: { type: mongoose.Schema.Types.ObjectId, ref: "Sweeper", required: true },
-  alarmTimestampMs: { type: Number, required: true },
-  opened: { type: Boolean, default: false },
-  openedTimestampMs: { type: Number, default: null },
-  responseMs: { type: Number, default: null },
-  verificationTimestampMs: { type: Number, default: null },
-  verificationStatus: { type: String, default: null }, // e.g., "skipped", "verified"
-  createdAt: { type: Date, default: Date.now },
-});
-const AlarmEvent = mongoose.model("AlarmEvent", alarmEventSchema);
-
 // Geofence schema
 const geofenceSchema = new mongoose.Schema({
   name: { type: String, required: true },
@@ -1109,6 +1099,25 @@ const geofenceSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 const Geofence = mongoose.model("Geofence", geofenceSchema);
+
+// ---------------- AlarmEvent schema (added) ----------------
+// Important: force the collection name to "alarmevents" to match your existing data
+const alarmEventSchema = new mongoose.Schema({
+  sweeperId: { type: mongoose.Schema.Types.ObjectId, ref: "Sweeper", required: true },
+  alarmTimestampMs: { type: Number, required: true }, // epoch ms
+  opened: { type: Boolean, default: false },
+  openedTimestampMs: { type: Number, default: null },
+  responseMs: { type: Number, default: null },
+  verificationTimestampMs: { type: Number, default: null },
+  verificationStatus: { type: String, default: null }, // e.g., 'skipped', 'verified'
+  note: { type: String, default: null }, // optional extra info
+  createdAt: { type: Date, default: Date.now },
+});
+
+// create an index to speed queries by sweeper and time
+alarmEventSchema.index({ sweeperId: 1, alarmTimestampMs: -1 });
+
+const AlarmEvent = mongoose.model("AlarmEvent", alarmEventSchema, "alarmevents"); // explicit collection name
 
 // ---------------- HTTP + Socket.IO ----------------
 const server = http.createServer(app);
@@ -1194,7 +1203,7 @@ app.delete("/sweepers/:id", async (req, res) => {
 
     await FaceData.deleteOne({ sweeperId: req.params.id });
     await Attendance.deleteMany({ sweeperId: req.params.id });
-    await AlarmEvent.deleteMany({ sweeperId: req.params.id });
+    await AlarmEvent.deleteMany({ sweeperId: req.params.id }); // remove alarms for the sweeper as well
 
     // Emit real-time event
     emitEvent("sweeper:deleted", { id: req.params.id });
@@ -1343,49 +1352,67 @@ app.get("/sweepers/:id/attendance", async (req, res) => {
   }
 });
 
-// ----------------- ALARMEVENT ROUTES (NEW) -----------------
+// ---------------- AlarmEvent routes ----------------
 
-// Create an alarm event (useful for testing)
+// Create alarm event (store in DB)
 app.post("/alarmevents", async (req, res) => {
   try {
     const payload = req.body;
-    // required: sweeperId, alarmTimestampMs
+    // Validate required fields
     if (!payload.sweeperId || !payload.alarmTimestampMs) {
       return res.status(400).json({ success: false, message: "sweeperId and alarmTimestampMs required" });
     }
-    const ev = new AlarmEvent(payload);
+    const ev = new AlarmEvent({
+      sweeperId: payload.sweeperId,
+      alarmTimestampMs: Number(payload.alarmTimestampMs),
+      opened: payload.opened === true,
+      openedTimestampMs: payload.openedTimestampMs ? Number(payload.openedTimestampMs) : null,
+      responseMs: payload.responseMs ? Number(payload.responseMs) : null,
+      verificationTimestampMs: payload.verificationTimestampMs ? Number(payload.verificationTimestampMs) : null,
+      verificationStatus: payload.verificationStatus || null,
+      note: payload.note || null,
+    });
     await ev.save();
-    emitEvent("alarmevent:created", { event: ev, sweeperId: payload.sweeperId });
+
+    // Emit event for realtime clients
+    emitEvent("alarmevent:created", { alarmevent: ev, sweeperId: ev.sweeperId });
+
     return res.json({ success: true, alarmevent: ev });
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// GET alarmevents — supports ?sweeperId=... and ?since=timestampMs
+// Get alarmevents (filter by sweeperId, from, to) - returns array
 app.get("/alarmevents", async (req, res) => {
   try {
-    const { sweeperId, since } = req.query;
-    const q = {};
-    if (sweeperId) q.sweeperId = sweeperId;
-    if (since) q.alarmTimestampMs = { $gte: parseInt(since, 10) };
-    const events = await AlarmEvent.find(q).sort({ alarmTimestampMs: -1 }).lean();
-    return res.json({ success: true, alarmevents: events });
+    const { sweeperId, from, to } = req.query;
+    const query = {};
+    if (sweeperId) query.sweeperId = sweeperId;
+    if (from || to) {
+      query.alarmTimestampMs = {};
+      if (from) query.alarmTimestampMs.$gte = Number(from);
+      if (to) query.alarmTimestampMs.$lte = Number(to);
+    }
+    const events = await AlarmEvent.find(query).sort({ alarmTimestampMs: -1 }).lean();
+    return res.json(events);
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// Alias /alarms -> /alarmevents (compatibility for frontends that call /alarms)
-app.get("/alarms", async (req, res) => {
-  // forward to same logic
+// Per-sweeper shortcut: GET /sweepers/:id/alarmevents
+app.get("/sweepers/:id/alarmevents", async (req, res) => {
   try {
-    const { sweeperId, since } = req.query;
-    const q = {};
-    if (sweeperId) q.sweeperId = sweeperId;
-    if (since) q.alarmTimestampMs = { $gte: parseInt(since, 10) };
-    const events = await AlarmEvent.find(q).sort({ alarmTimestampMs: -1 }).lean();
-    return res.json({ success: true, alarmevents: events });
+    const { from, to } = req.query;
+    const query = { sweeperId: req.params.id };
+    if (from || to) {
+      query.alarmTimestampMs = {};
+      if (from) query.alarmTimestampMs.$gte = Number(from);
+      if (to) query.alarmTimestampMs.$lte = Number(to);
+    }
+    const events = await AlarmEvent.find(query).sort({ alarmTimestampMs: -1 }).lean();
+    return res.json(events);
   } catch (err) {
     return res.status(500).json({ success: false, message: err.message });
   }
