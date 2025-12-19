@@ -3354,6 +3354,37 @@ app.get("/geofences/:id", async (req, res) => {
   }
 });
 
+// =======================================================================
+//  UPDATE GEOFENCE (NEW)
+//  PUT /geofences/:id
+// =======================================================================
+app.put("/geofences/:id", async (req, res) => {
+  try {
+    const { name, zone, landmark, geofence, checkpoints } = req.body;
+    
+    const gf = await Geofence.findByIdAndUpdate(
+      req. params.id,
+      {
+        name,
+        zone,
+        landmark,
+        geofence,
+        checkpoints,
+      },
+      { new: true } // Return the updated document
+    );
+
+    if (!gf) {
+      return res. status(404).json({ success: false, message: "Geofence not found" });
+    }
+
+    res.json({ success: true, geofence:  gf });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+
 app.delete("/geofences/:id", async (req, res) => {
   try {
     const gf = await Geofence.findByIdAndDelete(req.params.id);
