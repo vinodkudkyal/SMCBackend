@@ -1,13 +1,941 @@
-/* indexdb_Version2.js
-   (updated: added partitions query endpoint and an EventIndex collection to map
-    eventId -> sweeperId/dateKey for fast lookup. Updated POST /alarm-events to
-    accept slotName + initialStatus and store them in the embedded event so scheduled
-    alarms are persisted with attributes like "1st/2nd/3rd", time and default status.)
-   Additional changes:
-   - POST /alarmevents now requires a non-empty sweeperId and de-duplicates similar timestamps.
-   - Fallback creation with empty sweeperId is prevented (server returns 400).
-*/
+// /* indexdb_Version2.js
+//    (updated: added partitions query endpoint and an EventIndex collection to map
+//     eventId -> sweeperId/dateKey for fast lookup. Updated POST /alarm-events to
+//     accept slotName + initialStatus and store them in the embedded event so scheduled
+//     alarms are persisted with attributes like "1st/2nd/3rd", time and default status.)
+//    Additional changes:
+//    - POST /alarmevents now requires a non-empty sweeperId and de-duplicates similar timestamps.
+//    - Fallback creation with empty sweeperId is prevented (server returns 400).
+// */
 
+// const express = require("express");
+// const mongoose = require("mongoose");
+// const cors = require("cors");
+// const http = require("http");
+
+// // For alarmEvents separate collection (OLD version)
+// const { Types } = mongoose;
+
+// const app = express();
+// app.use(cors());
+// app.use(express.json());
+
+// // =======================================================================
+// //  MONGO CONNECTION
+// // =======================================================================
+// const MONGO_URI =
+//   "mongodb+srv://nagarshuddhismc_db_user:KU0RkVNSLcm23rkc@cluster0.7h8qa0n.mongodb.net/nagarshuddhi?retryWrites=true&w=majority&appName=Cluster0";
+
+// mongoose
+//   .connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+//   .then(() => console.log("✅ Connected to MongoDB"))
+//   .catch((err) => {
+//     console.error("❌ MongoDB connection error:", err);
+//     process.exit(1);
+//   });
+
+// // =======================================================================
+// //  SOCKET.IO (Old code – retained)
+// // =======================================================================
+// const server = http.createServer(app);
+// const { Server } = require("socket.io");
+// const io = new Server(server, {
+//   cors: { origin: "*" },
+// });
+
+// io.on("connection", (socket) => {
+//   console.log("🔌 socket connected:", socket.id);
+//   socket.on("disconnect", () => console.log("🔌 socket disconnected:", socket.id));
+// });
+
+// // helper
+// function emitEvent(name, payload) {
+//   try {
+//     io.emit(name, payload);
+//   } catch (e) {
+//     console.error("Socket emit error:", e);
+//   }
+// }
+
+// // =======================================================================
+// //  SCHEMAS — MERGED FROM OLD + NEW
+// // =======================================================================
+
+// // ---------------- USER ----------------
+// const userSchema = new mongoose.Schema({
+//   email: String,
+//   password: String,
+//   role: String,
+//   name: String,
+// });
+// const User = mongoose.model("User", userSchema);
+
+// // ---------------- SWEEPER ----------------
+// // NEW alarmEvents (embedded) merged into sweeper schema
+// const sweeperSchema = new mongoose.Schema({
+//   name: String,
+//   email: { type: String, unique: true },
+//   password: String,
+//   geofence: { type: Array, default: [] },
+//   checkpoints: { type: Array, default: [] },
+//   dutyTime: {
+//     start: { type: String, default: null },
+//     end: { type: String, default: null },
+//   },
+//   // NEW version alarmEvents (embedded by date key)
+//   // Structure: { "YYYY-MM-DD": [ { id, alarmTimestampMs, slotName, verificationStatus, ... } ] }
+//   alarmEvents: { type: Object, default: {} },
+
+//   // PARTITIONS: store per-day partitions (hidden field).
+//   partitions: { type: Object, default: {} },
+// });
+// const Sweeper = mongoose.model("Sweeper", sweeperSchema);
+
+// // ---------------- EVENT INDEX (fast lookup for embedded events) ----------------
+// // Maps eventId -> sweeperId + dateKey
+// const eventIndexSchema = new mongoose.Schema({
+//   eventId: { type: String, required: true, unique: true, index: true },
+//   sweeperId: { type: mongoose.Schema.Types.ObjectId, ref: "Sweeper", required: true },
+//   dateKey: { type: String, required: true },
+//   createdAt: { type: Date, default: Date.now },
+// });
+// const EventIndex = mongoose.model("EventIndex", eventIndexSchema, "eventindexes");
+
+// // ---------------- FACE DATA ----------------
+// const faceDataSchema = new mongoose.Schema({
+//   sweeperId: { type: mongoose.Schema.Types.ObjectId, ref: "Sweeper" },
+//   name: String,
+//   faceData: String,
+//   createdAt: { type: Date, default: Date.now },
+// });
+// const FaceData = mongoose.model("FaceData", faceDataSchema);
+
+// // ---------------- ATTENDANCE ----------------
+// const attendanceSchema = new mongoose.Schema({
+//   sweeperId: { type: mongoose.Schema.Types.ObjectId, ref: "Sweeper" },
+//   date: Date,
+//   location: { latitude: Number, longitude: Number },
+//   createdAt: { type: Date, default: Date.now },
+// });
+// const Attendance = mongoose.model("Attendance", attendanceSchema);
+
+// // ---------------- GEOFENCE ----------------
+// const geofenceSchema = new mongoose.Schema({
+//   name: String,
+//   zone: String,
+//   landmark: String,
+//   geofence: Array,
+//   checkpoints: Array,
+//   createdAt: { type: Date, default: Date.now },
+// });
+// const Geofence = mongoose.model("Geofence", geofenceSchema);
+
+// // ---------------- ALARM EVENTS — OLD VERSION (separate collection) ----------------
+// const alarmEventSchema = new mongoose.Schema({
+//   sweeperId: String,
+//   alarmTimestampMs: Number,
+//   opened: Boolean,
+//   openedTimestampMs: Number,
+//   responseMs: Number,
+//   verificationTimestampMs: Number,
+//   verificationStatus: String,
+//   slotName: String, // optional: "1", "2", "3"
+//   note: String,
+//   location: {
+//     latitude: Number,
+//     longitude: Number
+//   },
+//   createdAt: { type: Date, default: Date.now },
+// });
+// alarmEventSchema.index({ sweeperId: 1, alarmTimestampMs: -1 });
+
+// const AlarmEvent = mongoose.model("AlarmEvent", alarmEventSchema, "alarmevents");
+
+// // =======================================================================
+// //  ROUTES — MERGED
+// // =======================================================================
+
+// // ---------------- HEALTH CHECK ----------------
+// app.get("/", (req, res) => {
+//   res.json({ success: true, message: "Sweeper Tracker API running" });
+// });
+
+// // ---------------- LOGIN ----------------
+// app.post("/login", async (req, res) => {
+//   const { email, password } = req.body;
+//   try {
+//     let user = await User.findOne({ email, password }).lean();
+//     if (user)
+//       return res.json({
+//         success: true,
+//         role: user.role,
+//         name: user.name,
+//         id: user._id,
+//       });
+
+//     let sweeper = await Sweeper.findOne({ email, password }).lean();
+//     if (sweeper)
+//       return res.json({
+//         success: true,
+//         role: "sweeper",
+//         name: sweeper.name,
+//         id: sweeper._id,
+//       });
+
+//     res.status(401).json({ success: false, message: "Invalid credentials" });
+//   } catch (err) {
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // =======================================================================
+// //  SWEEPERS
+// // =======================================================================
+// app.get("/sweepers", async (req, res) => {
+//   try {
+//     res.json({ success: true, sweepers: await Sweeper.find().lean() });
+//   } catch (err) {
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// app.post("/sweepers", async (req, res) => {
+//   try {
+//     const { name, email, password, zone, status } = req.body;
+
+//     const exists = await Sweeper.findOne({ email });
+//     if (exists)
+//       return res.json({ success: false, message: "Email already exists" });
+
+//     const sweeper = await new Sweeper({
+//       name,
+//       email,
+//       password,
+//       zone,
+//       status
+//     }).save();
+
+//     emitEvent("sweeper:added", { sweeper });
+
+//     res.json({ success: true, sweeper });
+//   } catch (err) {
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// app.delete("/sweepers/:id", async (req, res) => {
+//   try {
+//     await Sweeper.findByIdAndDelete(req.params.id);
+//     await FaceData.deleteOne({ sweeperId: req.params.id });
+//     await Attendance.deleteMany({ sweeperId: req.params.id });
+//     await AlarmEvent.deleteMany({ sweeperId: req.params.id });
+//     // Optionally cleanup EventIndex entries for that sweeper
+//     await EventIndex.deleteMany({ sweeperId: req.params.id });
+
+//     emitEvent("sweeper:deleted", { id: req.params.id });
+
+//     res.json({ success: true, message: "Sweeper deleted successfully" });
+//   } catch (err) {
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // =======================================================================
+// //  ASSIGNMENT
+// // =======================================================================
+// app.get("/sweepers/:id/assignment", async (req, res) => {
+//   try {
+//     const s = await Sweeper.findById(req.params.id).lean();
+//     if (!s)
+//       return res.status(404).json({ success: false, message: "Sweeper not found" });
+
+//     res.json({
+//       success: true,
+//       geofence: s.geofence,
+//       checkpoints: s.checkpoints,
+//     });
+//   } catch (err) {
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// app.put("/sweepers/:id/assignment", async (req, res) => {
+//   try {
+//     const s = await Sweeper.findByIdAndUpdate(
+//       req.params.id,
+//       { geofence: req.body.geofence, checkpoints: req.body.checkpoints },
+//       { new: true }
+//     );
+
+//     emitEvent("sweeper:updated", { sweeper: s });
+
+//     res.json({ success: true, sweeper: s });
+//   } catch (err) {
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // =======================================================================
+// //  DUTY TIME
+// // =======================================================================
+// app.put("/sweepers/:id/duty-time", async (req, res) => {
+//   try {
+//     const s = await Sweeper.findByIdAndUpdate(
+//       req.params.id,
+//       { dutyTime: req.body },
+//       { new: true }
+//     );
+
+//     emitEvent("sweeper:duty-time-updated", {
+//       id: req.params.id,
+//       dutyTime: s.dutyTime,
+//     });
+
+//     res.json({ success: true, dutyTime: s.dutyTime });
+//   } catch (err) {
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // =======================================================================
+// //  FACE DATA
+// // =======================================================================
+// app.get("/sweepers/facedata/:id", async (req, res) => {
+//   try {
+//     const data = await FaceData.findOne({ sweeperId: req.params.id }).lean();
+//     res.json({
+//       success: true,
+//       hasFaceData: !!data,
+//       faceData: data?.faceData || null,
+//     });
+//   } catch (err) {
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// app.post("/sweepers/facedata/:id", async (req, res) => {
+//   try {
+//     const s = await Sweeper.findById(req.params.id);
+//     if (!s) return res.json({ success: false, message: "Sweeper not found" });
+
+//     let data = await FaceData.findOne({ sweeperId: req.params.id });
+
+//     if (!data) {
+//       data = await new FaceData({
+//         sweeperId: req.params.id,
+//         name: req.body.name,
+//         faceData: req.body.faceData,
+//       }).save();
+//     } else {
+//       data.name = req.body.name;
+//       data.faceData = req.body.faceData;
+//       await data.save();
+//     }
+
+//     res.json({ success: true, faceData: data });
+//   } catch (err) {
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // =======================================================================
+// //  ATTENDANCE
+// // =======================================================================
+// app.post("/sweepers/attendance", async (req, res) => {
+//   try {
+//     const { sweeperId, date, location } = req.body;
+
+//     const providedDate = date ? new Date(date) : new Date();
+
+//     const dayStart = new Date(providedDate);
+//     dayStart.setHours(0, 0, 0, 0);
+
+//     const dayEnd = new Date(dayStart);
+//     dayEnd.setDate(dayEnd.getDate() + 1);
+
+//     let existing = await Attendance.findOne({
+//       sweeperId,
+//       date: { $gte: dayStart, $lt: dayEnd },
+//     });
+
+//     if (existing)
+//       return res.json({
+//         success: true,
+//         message: "Attendance already marked",
+//         attendance: existing,
+//       });
+
+//     const attendance = await new Attendance({
+//       sweeperId,
+//       date: providedDate,
+//       location,
+//     }).save();
+
+//     emitEvent("attendance:marked", { sweeperId, attendance });
+
+//     res.json({ success: true, attendance });
+//   } catch (err) {
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// app.get("/sweepers/:id/attendance", async (req, res) => {
+//   try {
+//     const q = { sweeperId: req.params.id };
+
+//     if (req.query.from || req.query.to) {
+//       q.date = {};
+//       if (req.query.from) q.date.$gte = new Date(req.query.from);
+//       if (req.query.to) q.date.$lte = new Date(req.query.to);
+//     }
+
+//     const data = await Attendance.find(q).sort({ date: -1 }).lean();
+//     res.json({ success: true, attendanceHistory: data });
+//   } catch (err) {
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // =======================================================================
+// //  ALARM EVENTS — OLD VERSION ROUTES (separate collection)
+// //  Kept for backward compatibility but server-side logic prefers embedded events.
+// // =======================================================================
+// app.get("/alarmevents", async (req, res) => {
+//   try {
+//     const q = {};
+//     if (req.query.sweeperId) q.sweeperId = req.query.sweeperId;
+
+//     const events = await AlarmEvent.find(q)
+//       .sort({ alarmTimestampMs: -1 })
+//       .lean();
+
+//     res.json(events);
+//   } catch (err) {
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // Note: Creating standalone AlarmEvent documents is discouraged for scheduled events.
+// // This endpoint still exists; however, it now validates sweeperId presence and attempts
+// // to avoid duplicates by sweeperId + alarmTimestampMs.
+// app.post("/alarmevents", async (req, res) => {
+//   try {
+//     const body = req.body || {};
+//     const sweeperId = body.sweeperId;
+//     const alarmTimestampMs = Number(body.alarmTimestampMs || Date.now());
+//     const slotName = body.slotName || null;
+//     const verificationStatus = body.verificationStatus || body.verification_status || null;
+
+//     if (!sweeperId || String(sweeperId).trim() === "") {
+//       return res.status(400).json({ success: false, message: "sweeperId is required" });
+//     }
+
+//     // If there is already an embedded event for this sweeper/date/time, avoid creating duplicate AlarmEvent doc.
+//     // Prefer embedded storage; but for backwards compatibility we'll still create AlarmEvent only if requested explicitly.
+//     const existing = await AlarmEvent.findOne({
+//       sweeperId: sweeperId,
+//       alarmTimestampMs: alarmTimestampMs,
+//     }).lean();
+
+//     if (existing) {
+//       return res.json({ success: true, alarmevent: existing, message: "existing" });
+//     }
+
+//     const ev = await new AlarmEvent({
+//       sweeperId,
+//       alarmTimestampMs,
+//       opened: body.opened || false,
+//       openedTimestampMs: body.openedTimestampMs || null,
+//       verificationTimestampMs: body.verificationTimestampMs || null,
+//       verificationStatus: verificationStatus,
+//       slotName,
+//       note: body.note || null,
+//       location: body.location || null,
+//     }).save();
+
+//     // create index entry for legacy doc so EventIndex lookup can still be used
+//     try {
+//       await EventIndex.create({
+//         eventId: ev._id.toString(),
+//         sweeperId: mongoose.Types.ObjectId(ev.sweeperId),
+//         dateKey: (() => {
+//           const d = new Date(Number(ev.alarmTimestampMs || Date.now()));
+//           return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+//         })(),
+//       });
+//     } catch (e) {
+//       // ignore duplicate/index errors
+//     }
+
+//     emitEvent("alarmevent:created", {
+//       alarmevent: ev,
+//       sweeperId: ev.sweeperId,
+//     });
+
+//     res.json({ success: true, alarmevent: ev });
+//   } catch (err) {
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // =======================================================================
+// //  ALARM EVENTS — NEW VERSION (embedded inside sweeper document)
+// // =======================================================================
+
+// // Helper
+// function yyyymmddFromMs(ms) {
+//   const d = new Date(Number(ms));
+//   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(
+//     2,
+//     "0"
+//   )}-${String(d.getUTCDate()).padStart(2, "0")}`;
+// }
+
+// // CREATE new embedded alarm event
+// // Accepts `slotName` and `initialStatus` so scheduled events can be persisted
+// app.post("/alarm-events", async (req, res) => {
+//   try {
+//     const { sweeperId, alarmTimestampMs, location, slotName, initialStatus } = req.body;
+
+//     if (!sweeperId || String(sweeperId).trim() === '') {
+//       return res.status(400).json({ success: false, message: "sweeperId is required" });
+//     }
+
+//     const s = await Sweeper.findById(sweeperId);
+//     if (!s)
+//       return res.json({ success: false, message: "Sweeper not found" });
+
+//     const dateKey = yyyymmddFromMs(alarmTimestampMs || Date.now());
+//     const id = new mongoose.Types.ObjectId().toString();
+
+//     const evt = {
+//       id,
+//       alarmTimestampMs: Number(alarmTimestampMs || Date.now()),
+//       opened: false,
+//       openedTimestampMs: null,
+//       responseMs: null,
+//       verificationTimestampMs: null,
+//       verificationStatus: initialStatus || 'missed', // default to 'missed' for scheduled alarms
+//       slotName: slotName || null,
+//       location: location || null,
+//     };
+
+//     if (!s.alarmEvents) s.alarmEvents = {};
+//     if (!Array.isArray(s.alarmEvents[dateKey])) s.alarmEvents[dateKey] = [];
+//     // Avoid duplicate entries with same alarmTimestampMs
+//     const exists = s.alarmEvents[dateKey].some(e => Number(e.alarmTimestampMs) === Number(evt.alarmTimestampMs));
+//     if (!exists) {
+//       s.alarmEvents[dateKey].push(evt);
+//       await s.save();
+//     } else {
+//       // if duplicate, find existing event id and return it
+//       const found = s.alarmEvents[dateKey].find(e => Number(e.alarmTimestampMs) === Number(evt.alarmTimestampMs));
+//       return res.json({ success: true, event: found, dateKey });
+//     }
+
+//     // Add to EventIndex for fast lookup
+//     try {
+//       await EventIndex.create({
+//         eventId: id,
+//         sweeperId: s._id,
+//         dateKey,
+//       });
+//     } catch (e) {
+//       // ignore dup/index errors
+//     }
+
+//     res.json({ success: true, event: evt, dateKey });
+//   } catch (err) {
+//     res.json({ success: false, message: err.message });
+//   }
+// });
+
+// /**
+//  * BACKWARD COMPATIBLE ALARM EVENTS ENDPOINT
+//  * GET /sweepers/:id/alarmevents (or /alarm-events)
+//  * Merges old collection and embedded events.
+//  */
+// async function getMergedAlarmEventsForSweeper(sweeperId, fromMs = null, toMs = null) {
+//   // 1) old collection
+//   const oldEvents = await AlarmEvent.find({ sweeperId })
+//     .lean()
+//     .catch(() => []);
+
+//   const filteredOld = oldEvents.filter(ev => {
+//     const t = Number(ev.alarmTimestampMs || 0);
+//     if (fromMs && t < fromMs) return false;
+//     if (toMs && t > toMs) return false;
+//     return true;
+//   });
+
+//   // 2) embedded events
+//   const sweeper = await Sweeper.findById(sweeperId).lean();
+
+//   let embeddedEvents = [];
+//   if (sweeper?.alarmEvents) {
+//     for (const [dateKey, list] of Object.entries(sweeper.alarmEvents)) {
+//       if (!Array.isArray(list)) continue;
+
+//       list.forEach(ev => {
+//         const t = Number(ev.alarmTimestampMs || 0);
+//         if (fromMs && t < fromMs) return;
+//         if (toMs && t > toMs) return;
+//         embeddedEvents.push({
+//           ...ev,
+//           _id: ev.id,   // for compatibility
+//           sweeperId
+//         });
+//       });
+//     }
+//   }
+
+//   // 3) merge & sort
+//   const merged = [...filteredOld, ...embeddedEvents];
+//   merged.sort((a, b) => (b.alarmTimestampMs || 0) - (a.alarmTimestampMs || 0));
+//   return merged;
+// }
+
+// app.get("/sweepers/:id/alarmevents", async (req, res) => {
+//   try {
+//     const sweeperId = req.params.id;
+//     const { from, to } = req.query;
+//     const fromMs = from ? Number(from) : null;
+//     const toMs = to ? Number(to) : null;
+
+//     const merged = await getMergedAlarmEventsForSweeper(sweeperId, fromMs, toMs);
+//     return res.json(merged);
+//   } catch (err) {
+//     console.error("Error fetching merged alarm events:", err);
+//     return res.status(500).json({ error: err.message });
+//   }
+// });
+
+// // Also add hyphenated route expected by client: /sweepers/:id/alarm-events
+// app.get("/sweepers/:id/alarm-events", async (req, res) => {
+//   try {
+//     const sweeperId = req.params.id;
+//     const { from, to } = req.query;
+//     const fromMs = from ? Number(from) : null;
+//     const toMs = to ? Number(to) : null;
+
+//     const merged = await getMergedAlarmEventsForSweeper(sweeperId, fromMs, toMs);
+//     return res.json(merged);
+//   } catch (err) {
+//     console.error("Error fetching merged alarm events (hyphen route):", err);
+//     return res.status(500).json({ error: err.message });
+//   }
+// });
+
+// // =======================================================================
+// //  OPEN / VERIFY single event endpoints
+// //  PUT /alarm-events/:id/open
+// //  PUT /alarm-events/:id/verify
+// //  - These update either the AlarmEvent collection entry or the embedded sweeper.alarmEvents entry
+// //  - Uses EventIndex for fast lookup of embedded events
+// // =======================================================================
+
+// async function findEmbeddedEventById(eventId) {
+//   // Use EventIndex lookup
+//   try {
+//     const idx = await EventIndex.findOne({ eventId }).lean();
+//     if (!idx) return null;
+//     const sweeper = await Sweeper.findById(idx.sweeperId).lean();
+//     if (!sweeper) return null;
+//     const arr = sweeper.alarmEvents && sweeper.alarmEvents[idx.dateKey] ? sweeper.alarmEvents[idx.dateKey] : [];
+//     const ev = Array.isArray(arr) ? arr.find(x => String(x.id) === String(eventId)) : null;
+//     if (!ev) return null;
+//     return { sweeper, dateKey: idx.dateKey, event: ev };
+//   } catch (e) {
+//     console.error("EventIndex lookup error:", e);
+//     return null;
+//   }
+// }
+
+// app.put("/alarm-events/:id/open", async (req, res) => {
+//   try {
+//     const eventId = req.params.id;
+//     const openedTimestampMs = req.body.openedTimestampMs ? Number(req.body.openedTimestampMs) : Date.now();
+
+//     // 1) Try old collection by _id or id field
+//     let ae = null;
+//     try {
+//       ae = await AlarmEvent.findOne({ $or: [{ _id: eventId }, { id: eventId }] });
+//     } catch (_) {
+//       ae = null;
+//     }
+
+//     if (ae) {
+//       ae.opened = true;
+//       ae.openedTimestampMs = openedTimestampMs;
+//       if (ae.alarmTimestampMs) {
+//         ae.responseMs = (ae.openedTimestampMs || Date.now()) - (ae.alarmTimestampMs || 0);
+//       }
+//       await ae.save();
+//       return res.json({ success: true, event: ae });
+//     }
+
+//     // 2) Try embedded via EventIndex
+//     const found = await findEmbeddedEventById(eventId);
+//     if (found) {
+//       const s = await Sweeper.findById(found.sweeper._id);
+//       const arr = s.alarmEvents[found.dateKey];
+//       if (Array.isArray(arr)) {
+//         const idx = arr.findIndex(x => String(x.id) === String(eventId));
+//         if (idx !== -1) {
+//           s.alarmEvents[found.dateKey][idx].opened = true;
+//           s.alarmEvents[found.dateKey][idx].openedTimestampMs = openedTimestampMs;
+//           const alarmTs = s.alarmEvents[found.dateKey][idx].alarmTimestampMs;
+//           if (alarmTs) {
+//             s.alarmEvents[found.dateKey][idx].responseMs = openedTimestampMs - Number(alarmTs);
+//           }
+//           await s.save();
+//           return res.json({ success: true, event: s.alarmEvents[found.dateKey][idx] });
+//         }
+//       }
+//     }
+
+//     return res.status(404).json({ success: false, message: "Event not found" });
+//   } catch (err) {
+//     console.error("Error marking event open:", err);
+//     return res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// app.put("/alarm-events/:id/verify", async (req, res) => {
+//   try {
+//     const eventId = req.params.id;
+//     const verificationTimestampMs = req.body.verificationTimestampMs ? Number(req.body.verificationTimestampMs) : Date.now();
+//     const status = req.body.status ? String(req.body.status) : 'unknown';
+//     const location = req.body.location || null;
+
+//     // 1) Try old collection
+//     let ae = null;
+//     try {
+//       ae = await AlarmEvent.findOne({ $or: [{ _id: eventId }, { id: eventId }] });
+//     } catch (_) {
+//       ae = null;
+//     }
+
+//     if (ae) {
+//       ae.verificationTimestampMs = verificationTimestampMs;
+//       ae.verificationStatus = status;
+//       if (location && typeof location === 'object') {
+//         ae.location = {
+//           latitude: Number(location.latitude || null),
+//           longitude: Number(location.longitude || null)
+//         };
+//       }
+//       await ae.save();
+//       return res.json({ success: true, event: ae });
+//     }
+
+//     // 2) Try embedded via EventIndex
+//     const found = await findEmbeddedEventById(eventId);
+//     if (found) {
+//       const s = await Sweeper.findById(found.sweeper._id);
+//       const arr = s.alarmEvents[found.dateKey];
+//       if (Array.isArray(arr)) {
+//         const idx = arr.findIndex(x => String(x.id) === String(eventId));
+//         if (idx !== -1) {
+//           s.alarmEvents[found.dateKey][idx].verificationTimestampMs = verificationTimestampMs;
+//           s.alarmEvents[found.dateKey][idx].verificationStatus = status;
+//           if (location && typeof location === 'object') {
+//             s.alarmEvents[found.dateKey][idx].location = {
+//               latitude: Number(location.latitude || null),
+//               longitude: Number(location.longitude || null)
+//             };
+//           }
+//           await s.save();
+//           return res.json({ success: true, event: s.alarmEvents[found.dateKey][idx] });
+//         }
+//       }
+//     }
+
+//     return res.status(404).json({ success: false, message: "Event not found" });
+//   } catch (err) {
+//     console.error("Error recording verification:", err);
+//     return res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // =======================================================================
+// //  SAVE PARTITIONS (NEW)
+// //  PUT /sweepers/:id/partitions
+// //  Body: { dateKey?: string, partitions: [ { startMs: Number, endMs: Number } ] }
+// //  Stores partitions under sweeper.partitions[dateKey] = array
+// // =======================================================================
+// app.put("/sweepers/:id/partitions", async (req, res) => {
+//   try {
+//     const sweeperId = req.params.id;
+//     const { dateKey, partitions } = req.body;
+
+//     if (!Array.isArray(partitions) || partitions.length === 0) {
+//       return res.status(400).json({ success: false, message: "Partitions must be a non-empty array" });
+//     }
+
+//     const s = await Sweeper.findById(sweeperId);
+//     if (!s) return res.status(404).json({ success: false, message: "Sweeper not found" });
+
+//     // Determine date key if not provided (use first partition start)
+//     let key = dateKey;
+//     if (!key) {
+//       const firstStartMs = Number(partitions[0].startMs || Date.now());
+//       const d = new Date(firstStartMs);
+//       key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+//     }
+
+//     // Store with createdAt metadata per partition
+//     const stored = partitions.map(p => ({
+//       startMs: Number(p.startMs),
+//       endMs: Number(p.endMs),
+//       createdAt: new Date(),
+//     }));
+
+//     if (!s.partitions) s.partitions = {};
+//     s.partitions[key] = stored;
+
+//     await s.save();
+
+//     // Log to server console only (hidden from UI)
+//     console.log(`Saved partitions for sweeper=${sweeperId} date=${key} partitions=`, stored);
+
+//     // Optionally emit socket for server-side monitoring (not for UI)
+//     emitEvent("sweeper:partitions-saved", { sweeperId, dateKey: key });
+
+//     res.json({ success: true, dateKey: key });
+//   } catch (err) {
+//     console.error("Error saving partitions:", err);
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // =======================================================================
+// //  NEW: GET partitions for sweeper/date
+// //  GET /sweepers/:id/partitions?dateKey=YYYY-MM-DD
+// //  If dateKey omitted, returns entire partitions object for sweeper
+// // =======================================================================
+// app.get("/sweepers/:id/partitions", async (req, res) => {
+//   try {
+//     const sweeperId = req.params.id;
+//     const dateKey = req.query.dateKey;
+
+//     const s = await Sweeper.findById(sweeperId).lean();
+//     if (!s) return res.status(404).json({ success: false, message: "Sweeper not found" });
+
+//     if (!s.partitions) return res.json({ success: true, partitions: {} });
+
+//     if (dateKey) {
+//       const partsForDate = s.partitions[dateKey] || [];
+//       return res.json({ success: true, dateKey, partitions: partsForDate });
+//     }
+
+//     // return all
+//     return res.json({ success: true, partitions: s.partitions });
+//   } catch (err) {
+//     console.error("Error fetching partitions:", err);
+//     return res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // =======================================================================
+// //  GEOFENCE ROUTES
+// // =======================================================================
+// app.post("/geofences", async (req, res) => {
+//   try {
+//     const gf = await new Geofence(req.body).save();
+//     res.json({ success: true, geofence: gf });
+//   } catch (err) {
+//     res.json({ success: false, message: err.message });
+//   }
+// });
+
+// app.get("/geofences", async (req, res) => {
+//   try {
+//     const data = await Geofence.find().lean();
+//     res.json({ success: true, geofences: data });
+//   } catch (err) {
+//     res.json({ success: false, message: err.message });
+//   }
+// });
+
+// // =======================================================================
+// //  UPDATE GEOFENCE (NEW)
+// //  PUT /geofences/:id
+// // =======================================================================
+// app.put("/geofences/:id", async (req, res) => {
+//   try {
+//     const { name, zone, landmark, geofence, checkpoints } = req.body;
+    
+//     const gf = await Geofence.findByIdAndUpdate(
+//       req. params.id,
+//       {
+//         name,
+//         zone,
+//         landmark,
+//         geofence,
+//         checkpoints,
+//       },
+//       { new: true } // Return the updated document
+//     );
+
+//     if (!gf) {
+//       return res. status(404).json({ success: false, message: "Geofence not found" });
+//     }
+
+//     res.json({ success: true, geofence:  gf });
+//   } catch (err) {
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+
+// app.get("/geofences/:id", async (req, res) => {
+//   try {
+//     const data = await Geofence.findById(req.params.id).lean();
+//     if (!data)
+//       return res.json({ success: false, message: "Geofence not found" });
+
+//     res.json({ success: true, geofence: data });
+//   } catch (err) {
+//     res.json({ success: false, message: err.message });
+//   }
+// });
+
+// app.delete("/geofences/:id", async (req, res) => {
+//   try {
+//     const gf = await Geofence.findByIdAndDelete(req.params.id);
+//     if (!gf)
+//       return res.json({ success: false, message: "Geofence not found" });
+
+//     res.json({ success: true, message: "Geofence deleted" });
+//   } catch (err) {
+//     res.status(500).json({ success: false, message: err.message });
+//   }
+// });
+
+// // =======================================================================
+// //  START SERVER
+// // =======================================================================
+// const PORT = process.env.PORT || 3000;
+// server.listen(PORT, "0.0.0.0", () =>
+//   console.log(`🚀 SERVER + SOCKET.IO RUNNING ON http://0.0.0.0:${PORT}`)
+// );
+
+
+
+
+
+
+
+/* indexdb_Version2_Version3.js
+   Updated:
+   - Added AlarmEventGroup (grouped missed events per sweeper/date) to avoid creating many docs
+   - POST /alarmevents now upserts into AlarmEventGroup (datewise nested events) and creates EventIndex entries with storage='group'
+   - GET /alarmevents returns merged old-style events + grouped events (flattened) when sweeperId provided
+   - EventIndex schema extended with storage and groupId so findEmbeddedEventById can locate events stored in groups
+   - findEmbeddedEventById extended to handle 'group' storage
+   - Default 'missed' verificationStatus set when creating fallback group events
+*/
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
@@ -35,7 +963,7 @@ mongoose
   });
 
 // =======================================================================
-//  SOCKET.IO (Old code – retained)
+//  SOCKET.IO
 // =======================================================================
 const server = http.createServer(app);
 const { Server } = require("socket.io");
@@ -71,7 +999,6 @@ const userSchema = new mongoose.Schema({
 const User = mongoose.model("User", userSchema);
 
 // ---------------- SWEEPER ----------------
-// NEW alarmEvents (embedded) merged into sweeper schema
 const sweeperSchema = new mongoose.Schema({
   name: String,
   email: { type: String, unique: true },
@@ -82,24 +1009,32 @@ const sweeperSchema = new mongoose.Schema({
     start: { type: String, default: null },
     end: { type: String, default: null },
   },
-  // NEW version alarmEvents (embedded by date key)
-  // Structure: { "YYYY-MM-DD": [ { id, alarmTimestampMs, slotName, verificationStatus, ... } ] }
   alarmEvents: { type: Object, default: {} },
-
-  // PARTITIONS: store per-day partitions (hidden field).
   partitions: { type: Object, default: {} },
 });
 const Sweeper = mongoose.model("Sweeper", sweeperSchema);
 
-// ---------------- EVENT INDEX (fast lookup for embedded events) ----------------
-// Maps eventId -> sweeperId + dateKey
+// ---------------- EVENT INDEX ----------------
 const eventIndexSchema = new mongoose.Schema({
   eventId: { type: String, required: true, unique: true, index: true },
   sweeperId: { type: mongoose.Schema.Types.ObjectId, ref: "Sweeper", required: true },
   dateKey: { type: String, required: true },
+  storage: { type: String, enum: ["sweeper", "group", "old"], default: "sweeper" }, // where the event lives
+  groupId: { type: mongoose.Schema.Types.ObjectId, ref: "AlarmEventGroup", default: null }, // when storage === 'group'
   createdAt: { type: Date, default: Date.now },
 });
 const EventIndex = mongoose.model("EventIndex", eventIndexSchema, "eventindexes");
+
+// ---------------- ALARM EVENT GROUP (new) ----------------
+// Stores missed/legacy events grouped per sweeper + dateKey to avoid many documents.
+// Structure: { sweeperId, dateKey, events: [ { id, alarmTimestampMs, opened, verificationStatus, ... } ] }
+const alarmEventGroupSchema = new mongoose.Schema({
+  sweeperId: { type: mongoose.Schema.Types.ObjectId, ref: "Sweeper", required: true, index: true },
+  dateKey: { type: String, required: true, index: true },
+  events: { type: Array, default: [] },
+  updatedAt: { type: Date, default: Date.now },
+});
+const AlarmEventGroup = mongoose.model("AlarmEventGroup", alarmEventGroupSchema, "alarmeventgroups");
 
 // ---------------- FACE DATA ----------------
 const faceDataSchema = new mongoose.Schema({
@@ -139,7 +1074,6 @@ const alarmEventSchema = new mongoose.Schema({
   responseMs: Number,
   verificationTimestampMs: Number,
   verificationStatus: String,
-  slotName: String, // optional: "1", "2", "3"
   note: String,
   location: {
     latitude: Number,
@@ -152,15 +1086,14 @@ alarmEventSchema.index({ sweeperId: 1, alarmTimestampMs: -1 });
 const AlarmEvent = mongoose.model("AlarmEvent", alarmEventSchema, "alarmevents");
 
 // =======================================================================
-//  ROUTES — MERGED
+//  ROUTES
 // =======================================================================
 
-// ---------------- HEALTH CHECK ----------------
 app.get("/", (req, res) => {
   res.json({ success: true, message: "Sweeper Tracker API running" });
 });
 
-// ---------------- LOGIN ----------------
+// LOGIN
 app.post("/login", async (req, res) => {
   const { email, password } = req.body;
   try {
@@ -188,9 +1121,7 @@ app.post("/login", async (req, res) => {
   }
 });
 
-// =======================================================================
-//  SWEEPERS
-// =======================================================================
+// SWEEPERS
 app.get("/sweepers", async (req, res) => {
   try {
     res.json({ success: true, sweepers: await Sweeper.find().lean() });
@@ -229,8 +1160,8 @@ app.delete("/sweepers/:id", async (req, res) => {
     await FaceData.deleteOne({ sweeperId: req.params.id });
     await Attendance.deleteMany({ sweeperId: req.params.id });
     await AlarmEvent.deleteMany({ sweeperId: req.params.id });
-    // Optionally cleanup EventIndex entries for that sweeper
     await EventIndex.deleteMany({ sweeperId: req.params.id });
+    await AlarmEventGroup.deleteMany({ sweeperId: req.params.id });
 
     emitEvent("sweeper:deleted", { id: req.params.id });
 
@@ -240,9 +1171,7 @@ app.delete("/sweepers/:id", async (req, res) => {
   }
 });
 
-// =======================================================================
-//  ASSIGNMENT
-// =======================================================================
+// ASSIGNMENT
 app.get("/sweepers/:id/assignment", async (req, res) => {
   try {
     const s = await Sweeper.findById(req.params.id).lean();
@@ -275,9 +1204,7 @@ app.put("/sweepers/:id/assignment", async (req, res) => {
   }
 });
 
-// =======================================================================
-//  DUTY TIME
-// =======================================================================
+// DUTY TIME
 app.put("/sweepers/:id/duty-time", async (req, res) => {
   try {
     const s = await Sweeper.findByIdAndUpdate(
@@ -297,9 +1224,7 @@ app.put("/sweepers/:id/duty-time", async (req, res) => {
   }
 });
 
-// =======================================================================
-//  FACE DATA
-// =======================================================================
+// FACE DATA
 app.get("/sweepers/facedata/:id", async (req, res) => {
   try {
     const data = await FaceData.findOne({ sweeperId: req.params.id }).lean();
@@ -338,9 +1263,7 @@ app.post("/sweepers/facedata/:id", async (req, res) => {
   }
 });
 
-// =======================================================================
-//  ATTENDANCE
-// =======================================================================
+// ATTENDANCE
 app.post("/sweepers/attendance", async (req, res) => {
   try {
     const { sweeperId, date, location } = req.body;
@@ -396,142 +1319,124 @@ app.get("/sweepers/:id/attendance", async (req, res) => {
   }
 });
 
-// =======================================================================
-//  ALARM EVENTS — OLD VERSION ROUTES (separate collection)
-//  Kept for backward compatibility but server-side logic prefers embedded events.
-// =======================================================================
-app.get("/alarmevents", async (req, res) => {
-  try {
-    const q = {};
-    if (req.query.sweeperId) q.sweeperId = req.query.sweeperId;
-
-    const events = await AlarmEvent.find(q)
-      .sort({ alarmTimestampMs: -1 })
-      .lean();
-
-    res.json(events);
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// Note: Creating standalone AlarmEvent documents is discouraged for scheduled events.
-// This endpoint still exists; however, it now validates sweeperId presence and attempts
-// to avoid duplicates by sweeperId + alarmTimestampMs.
+// ALARM EVENTS — OLD VERSION ROUTES (separate collection)
+// Modified POST /alarmevents to upsert into AlarmEventGroup (datewise) to avoid many documents
 app.post("/alarmevents", async (req, res) => {
   try {
-    const body = req.body || {};
-    const sweeperId = body.sweeperId;
-    const alarmTimestampMs = Number(body.alarmTimestampMs || Date.now());
-    const slotName = body.slotName || null;
-    const verificationStatus = body.verificationStatus || body.verification_status || null;
+    const { sweeperId, alarmTimestampMs, opened, openedTimestampMs, verificationTimestampMs, verificationStatus, note, location } = req.body;
 
-    if (!sweeperId || String(sweeperId).trim() === "") {
-      return res.status(400).json({ success: false, message: "sweeperId is required" });
-    }
+    // compute dateKey
+    const d = new Date(Number(alarmTimestampMs || Date.now()));
+    const dateKey = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 
-    // If there is already an embedded event for this sweeper/date/time, avoid creating duplicate AlarmEvent doc.
-    // Prefer embedded storage; but for backwards compatibility we'll still create AlarmEvent only if requested explicitly.
-    const existing = await AlarmEvent.findOne({
-      sweeperId: sweeperId,
-      alarmTimestampMs: alarmTimestampMs,
-    }).lean();
+    // event object to store
+    const evtId = new mongoose.Types.ObjectId().toString();
+    const evt = {
+      id: evtId,
+      alarmTimestampMs: Number(alarmTimestampMs || Date.now()),
+      opened: !!opened,
+      openedTimestampMs: openedTimestampMs ? Number(openedTimestampMs) : null,
+      responseMs: null,
+      verificationTimestampMs: verificationTimestampMs ? Number(verificationTimestampMs) : null,
+      verificationStatus: verificationStatus || "missed",
+      note: note || null,
+      location: (location && typeof location === 'object') ? location : null,
+      createdAt: new Date(),
+    };
 
-    if (existing) {
-      return res.json({ success: true, alarmevent: existing, message: "existing" });
-    }
+    // Upsert into AlarmEventGroup for this sweeper/date
+    const group = await AlarmEventGroup.findOneAndUpdate(
+      { sweeperId: mongoose.Types.ObjectId(sweeperId), dateKey },
+      { $push: { events: evt }, $set: { updatedAt: new Date() } },
+      { upsert: true, new: true }
+    );
 
-    const ev = await new AlarmEvent({
-      sweeperId,
-      alarmTimestampMs,
-      opened: body.opened || false,
-      openedTimestampMs: body.openedTimestampMs || null,
-      verificationTimestampMs: body.verificationTimestampMs || null,
-      verificationStatus: verificationStatus,
-      slotName,
-      note: body.note || null,
-      location: body.location || null,
-    }).save();
-
-    // create index entry for legacy doc so EventIndex lookup can still be used
+    // Create EventIndex pointing to the group storage so lookup/update routes can find nested events
     try {
       await EventIndex.create({
-        eventId: ev._id.toString(),
-        sweeperId: mongoose.Types.ObjectId(ev.sweeperId),
-        dateKey: (() => {
-          const d = new Date(Number(ev.alarmTimestampMs || Date.now()));
-          return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
-        })(),
+        eventId: evt.id,
+        sweeperId: mongoose.Types.ObjectId(sweeperId),
+        dateKey,
+        storage: 'group',
+        groupId: group._id,
       });
     } catch (e) {
       // ignore duplicate/index errors
     }
 
     emitEvent("alarmevent:created", {
-      alarmevent: ev,
-      sweeperId: ev.sweeperId,
+      alarmevent: evt,
+      sweeperId,
     });
 
-    res.json({ success: true, alarmevent: ev });
+    res.json({ success: true, alarmevent: evt, groupId: group._id, dateKey });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// =======================================================================
-//  ALARM EVENTS — NEW VERSION (embedded inside sweeper document)
-// =======================================================================
+// GET /alarmevents - returns merged old-style docs + flattened grouped events for sweeperId query
+app.get("/alarmevents", async (req, res) => {
+  try {
+    const q = {};
+    if (req.query.sweeperId) q.sweeperId = req.query.sweeperId;
 
-// Helper
+    const events = await AlarmEvent.find(q).sort({ alarmTimestampMs: -1 }).lean().catch(() => []);
+
+    // If sweeperId provided, also fetch grouped events and flatten them
+    let groupedFlatten = [];
+    if (req.query.sweeperId) {
+      const groups = await AlarmEventGroup.find({ sweeperId: req.query.sweeperId }).lean().catch(() => []);
+      groups.forEach(g => {
+        const evs = Array.isArray(g.events) ? g.events.map(e => ({ ...e, sweeperId: req.query.sweeperId })) : [];
+        groupedFlatten = groupedFlatten.concat(evs);
+      });
+      // sort by alarmTimestampMs desc
+      groupedFlatten.sort((a, b) => (b.alarmTimestampMs || 0) - (a.alarmTimestampMs || 0));
+    }
+
+    // combine old events + grouped flattened (grouped may overlap older docs; client merges by id)
+    const merged = [...events, ...groupedFlatten];
+    merged.sort((a, b) => (b.alarmTimestampMs || 0) - (a.alarmTimestampMs || 0));
+
+    res.json(merged);
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ALARM EVENTS — NEW VERSION (embedded inside sweeper document)
 function yyyymmddFromMs(ms) {
   const d = new Date(Number(ms));
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(
-    2,
-    "0"
-  )}-${String(d.getUTCDate()).padStart(2, "0")}`;
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
-// CREATE new embedded alarm event
-// Accepts `slotName` and `initialStatus` so scheduled events can be persisted
 app.post("/alarm-events", async (req, res) => {
   try {
-    const { sweeperId, alarmTimestampMs, location, slotName, initialStatus } = req.body;
-
-    if (!sweeperId || String(sweeperId).trim() === '') {
-      return res.status(400).json({ success: false, message: "sweeperId is required" });
-    }
+    const { sweeperId, alarmTimestampMs, location } = req.body;
 
     const s = await Sweeper.findById(sweeperId);
     if (!s)
       return res.json({ success: false, message: "Sweeper not found" });
 
-    const dateKey = yyyymmddFromMs(alarmTimestampMs || Date.now());
+    const dateKey = yyyymmddFromMs(alarmTimestampMs);
     const id = new mongoose.Types.ObjectId().toString();
 
     const evt = {
       id,
-      alarmTimestampMs: Number(alarmTimestampMs || Date.now()),
+      alarmTimestampMs,
       opened: false,
       openedTimestampMs: null,
       responseMs: null,
       verificationTimestampMs: null,
-      verificationStatus: initialStatus || 'missed', // default to 'missed' for scheduled alarms
-      slotName: slotName || null,
+      verificationStatus: 'missed', // default to missed server-side
       location: location || null,
     };
 
-    if (!s.alarmEvents) s.alarmEvents = {};
-    if (!Array.isArray(s.alarmEvents[dateKey])) s.alarmEvents[dateKey] = [];
-    // Avoid duplicate entries with same alarmTimestampMs
-    const exists = s.alarmEvents[dateKey].some(e => Number(e.alarmTimestampMs) === Number(evt.alarmTimestampMs));
-    if (!exists) {
-      s.alarmEvents[dateKey].push(evt);
-      await s.save();
-    } else {
-      // if duplicate, find existing event id and return it
-      const found = s.alarmEvents[dateKey].find(e => Number(e.alarmTimestampMs) === Number(evt.alarmTimestampMs));
-      return res.json({ success: true, event: found, dateKey });
-    }
+    if (!s.alarmEvents[dateKey]) s.alarmEvents[dateKey] = [];
+    s.alarmEvents[dateKey].push(evt);
+
+    await s.save();
 
     // Add to EventIndex for fast lookup
     try {
@@ -539,6 +1444,7 @@ app.post("/alarm-events", async (req, res) => {
         eventId: id,
         sweeperId: s._id,
         dateKey,
+        storage: 'sweeper',
       });
     } catch (e) {
       // ignore dup/index errors
@@ -551,15 +1457,11 @@ app.post("/alarm-events", async (req, res) => {
 });
 
 /**
- * BACKWARD COMPATIBLE ALARM EVENTS ENDPOINT
- * GET /sweepers/:id/alarmevents (or /alarm-events)
- * Merges old collection and embedded events.
+ * BACKWARD COMPATIBLE ALARM EVENTS ENDPOINT (merges old + embedded + grouped)
  */
 async function getMergedAlarmEventsForSweeper(sweeperId, fromMs = null, toMs = null) {
   // 1) old collection
-  const oldEvents = await AlarmEvent.find({ sweeperId })
-    .lean()
-    .catch(() => []);
+  const oldEvents = await AlarmEvent.find({ sweeperId }).lean().catch(() => []);
 
   const filteredOld = oldEvents.filter(ev => {
     const t = Number(ev.alarmTimestampMs || 0);
@@ -589,8 +1491,25 @@ async function getMergedAlarmEventsForSweeper(sweeperId, fromMs = null, toMs = n
     }
   }
 
-  // 3) merge & sort
-  const merged = [...filteredOld, ...embeddedEvents];
+  // 3) grouped events
+  const groups = await AlarmEventGroup.find({ sweeperId }).lean().catch(() => []);
+  let groupedEvents = [];
+  for (const g of groups) {
+    const list = Array.isArray(g.events) ? g.events : [];
+    list.forEach(ev => {
+      const t = Number(ev.alarmTimestampMs || 0);
+      if (fromMs && t < fromMs) return;
+      if (toMs && t > toMs) return;
+      groupedEvents.push({
+        ...ev,
+        _id: ev.id,
+        sweeperId
+      });
+    });
+  }
+
+  // 4) merge & sort
+  const merged = [...filteredOld, ...embeddedEvents, ...groupedEvents];
   merged.sort((a, b) => (b.alarmTimestampMs || 0) - (a.alarmTimestampMs || 0));
   return merged;
 }
@@ -610,7 +1529,7 @@ app.get("/sweepers/:id/alarmevents", async (req, res) => {
   }
 });
 
-// Also add hyphenated route expected by client: /sweepers/:id/alarm-events
+// hyphenated route
 app.get("/sweepers/:id/alarm-events", async (req, res) => {
   try {
     const sweeperId = req.params.id;
@@ -626,25 +1545,34 @@ app.get("/sweepers/:id/alarm-events", async (req, res) => {
   }
 });
 
-// =======================================================================
-//  OPEN / VERIFY single event endpoints
-//  PUT /alarm-events/:id/open
-//  PUT /alarm-events/:id/verify
-//  - These update either the AlarmEvent collection entry or the embedded sweeper.alarmEvents entry
-//  - Uses EventIndex for fast lookup of embedded events
-// =======================================================================
-
+// findEmbeddedEventById - extended to support group storage
 async function findEmbeddedEventById(eventId) {
-  // Use EventIndex lookup
   try {
     const idx = await EventIndex.findOne({ eventId }).lean();
     if (!idx) return null;
-    const sweeper = await Sweeper.findById(idx.sweeperId).lean();
-    if (!sweeper) return null;
-    const arr = sweeper.alarmEvents && sweeper.alarmEvents[idx.dateKey] ? sweeper.alarmEvents[idx.dateKey] : [];
-    const ev = Array.isArray(arr) ? arr.find(x => String(x.id) === String(eventId)) : null;
-    if (!ev) return null;
-    return { sweeper, dateKey: idx.dateKey, event: ev };
+
+    if ((idx.storage || 'sweeper') === 'sweeper') {
+      const sweeper = await Sweeper.findById(idx.sweeperId).lean();
+      if (!sweeper) return null;
+      const arr = sweeper.alarmEvents && sweeper.alarmEvents[idx.dateKey] ? sweeper.alarmEvents[idx.dateKey] : [];
+      const ev = Array.isArray(arr) ? arr.find(x => String(x.id) === String(eventId)) : null;
+      if (!ev) return null;
+      return { kind: 'sweeper', sweeper, dateKey: idx.dateKey, event: ev };
+    } else if (idx.storage === 'group' && idx.groupId) {
+      const group = await AlarmEventGroup.findById(idx.groupId).lean();
+      if (!group) return null;
+      const arr = Array.isArray(group.events) ? group.events : [];
+      const ev = arr.find(x => String(x.id) === String(eventId));
+      if (!ev) return null;
+      return { kind: 'group', group, dateKey: idx.dateKey, event: ev };
+    } else {
+      // fallback: try old AlarmEvent collection by _id
+      try {
+        const ae = await AlarmEvent.findById(eventId).lean();
+        if (ae) return { kind: 'old', event: ae };
+      } catch (_) {}
+      return null;
+    }
   } catch (e) {
     console.error("EventIndex lookup error:", e);
     return null;
@@ -674,23 +1602,43 @@ app.put("/alarm-events/:id/open", async (req, res) => {
       return res.json({ success: true, event: ae });
     }
 
-    // 2) Try embedded via EventIndex
+    // 2) Try embedded via EventIndex or grouped
     const found = await findEmbeddedEventById(eventId);
     if (found) {
-      const s = await Sweeper.findById(found.sweeper._id);
-      const arr = s.alarmEvents[found.dateKey];
-      if (Array.isArray(arr)) {
-        const idx = arr.findIndex(x => String(x.id) === String(eventId));
-        if (idx !== -1) {
-          s.alarmEvents[found.dateKey][idx].opened = true;
-          s.alarmEvents[found.dateKey][idx].openedTimestampMs = openedTimestampMs;
-          const alarmTs = s.alarmEvents[found.dateKey][idx].alarmTimestampMs;
-          if (alarmTs) {
-            s.alarmEvents[found.dateKey][idx].responseMs = openedTimestampMs - Number(alarmTs);
+      if (found.kind === 'sweeper') {
+        const s = await Sweeper.findById(found.sweeper._id);
+        const arr = s.alarmEvents[found.dateKey];
+        if (Array.isArray(arr)) {
+          const idx = arr.findIndex(x => String(x.id) === String(eventId));
+          if (idx !== -1) {
+            s.alarmEvents[found.dateKey][idx].opened = true;
+            s.alarmEvents[found.dateKey][idx].openedTimestampMs = openedTimestampMs;
+            const alarmTs = s.alarmEvents[found.dateKey][idx].alarmTimestampMs;
+            if (alarmTs) {
+              s.alarmEvents[found.dateKey][idx].responseMs = openedTimestampMs - Number(alarmTs);
+            }
+            await s.save();
+            return res.json({ success: true, event: s.alarmEvents[found.dateKey][idx] });
           }
-          await s.save();
-          return res.json({ success: true, event: s.alarmEvents[found.dateKey][idx] });
         }
+      } else if (found.kind === 'group') {
+        const g = await AlarmEventGroup.findById(found.group._id);
+        if (g) {
+          const idx = g.events.findIndex(x => String(x.id) === String(eventId));
+          if (idx !== -1) {
+            g.events[idx].opened = true;
+            g.events[idx].openedTimestampMs = openedTimestampMs;
+            const alarmTs = g.events[idx].alarmTimestampMs;
+            if (alarmTs) {
+              g.events[idx].responseMs = openedTimestampMs - Number(alarmTs);
+            }
+            g.updatedAt = new Date();
+            await g.save();
+            return res.json({ success: true, event: g.events[idx] });
+          }
+        }
+      } else if (found.kind === 'old') {
+        // handled earlier
       }
     }
 
@@ -705,7 +1653,7 @@ app.put("/alarm-events/:id/verify", async (req, res) => {
   try {
     const eventId = req.params.id;
     const verificationTimestampMs = req.body.verificationTimestampMs ? Number(req.body.verificationTimestampMs) : Date.now();
-    const status = req.body.status ? String(req.body.status) : 'unknown';
+    const status = req.body.status ? String(req.body.status) : 'present';
     const location = req.body.location || null;
 
     // 1) Try old collection
@@ -729,24 +1677,44 @@ app.put("/alarm-events/:id/verify", async (req, res) => {
       return res.json({ success: true, event: ae });
     }
 
-    // 2) Try embedded via EventIndex
+    // 2) Try embedded/group via EventIndex
     const found = await findEmbeddedEventById(eventId);
     if (found) {
-      const s = await Sweeper.findById(found.sweeper._id);
-      const arr = s.alarmEvents[found.dateKey];
-      if (Array.isArray(arr)) {
-        const idx = arr.findIndex(x => String(x.id) === String(eventId));
-        if (idx !== -1) {
-          s.alarmEvents[found.dateKey][idx].verificationTimestampMs = verificationTimestampMs;
-          s.alarmEvents[found.dateKey][idx].verificationStatus = status;
-          if (location && typeof location === 'object') {
-            s.alarmEvents[found.dateKey][idx].location = {
-              latitude: Number(location.latitude || null),
-              longitude: Number(location.longitude || null)
-            };
+      if (found.kind === 'sweeper') {
+        const s = await Sweeper.findById(found.sweeper._id);
+        const arr = s.alarmEvents[found.dateKey];
+        if (Array.isArray(arr)) {
+          const idx = arr.findIndex(x => String(x.id) === String(eventId));
+          if (idx !== -1) {
+            s.alarmEvents[found.dateKey][idx].verificationTimestampMs = verificationTimestampMs;
+            s.alarmEvents[found.dateKey][idx].verificationStatus = status;
+            if (location && typeof location === 'object') {
+              s.alarmEvents[found.dateKey][idx].location = {
+                latitude: Number(location.latitude || null),
+                longitude: Number(location.longitude || null)
+              };
+            }
+            await s.save();
+            return res.json({ success: true, event: s.alarmEvents[found.dateKey][idx] });
           }
-          await s.save();
-          return res.json({ success: true, event: s.alarmEvents[found.dateKey][idx] });
+        }
+      } else if (found.kind === 'group') {
+        const g = await AlarmEventGroup.findById(found.group._id);
+        if (g) {
+          const idx = g.events.findIndex(x => String(x.id) === String(eventId));
+          if (idx !== -1) {
+            g.events[idx].verificationTimestampMs = verificationTimestampMs;
+            g.events[idx].verificationStatus = status;
+            if (location && typeof location === 'object') {
+              g.events[idx].location = {
+                latitude: Number(location.latitude || null),
+                longitude: Number(location.longitude || null)
+              };
+            }
+            g.updatedAt = new Date();
+            await g.save();
+            return res.json({ success: true, event: g.events[idx] });
+          }
         }
       }
     }
@@ -758,12 +1726,7 @@ app.put("/alarm-events/:id/verify", async (req, res) => {
   }
 });
 
-// =======================================================================
-//  SAVE PARTITIONS (NEW)
-//  PUT /sweepers/:id/partitions
-//  Body: { dateKey?: string, partitions: [ { startMs: Number, endMs: Number } ] }
-//  Stores partitions under sweeper.partitions[dateKey] = array
-// =======================================================================
+// PARTITIONS save/get (unchanged)
 app.put("/sweepers/:id/partitions", async (req, res) => {
   try {
     const sweeperId = req.params.id;
@@ -776,7 +1739,6 @@ app.put("/sweepers/:id/partitions", async (req, res) => {
     const s = await Sweeper.findById(sweeperId);
     if (!s) return res.status(404).json({ success: false, message: "Sweeper not found" });
 
-    // Determine date key if not provided (use first partition start)
     let key = dateKey;
     if (!key) {
       const firstStartMs = Number(partitions[0].startMs || Date.now());
@@ -784,7 +1746,6 @@ app.put("/sweepers/:id/partitions", async (req, res) => {
       key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
     }
 
-    // Store with createdAt metadata per partition
     const stored = partitions.map(p => ({
       startMs: Number(p.startMs),
       endMs: Number(p.endMs),
@@ -796,10 +1757,8 @@ app.put("/sweepers/:id/partitions", async (req, res) => {
 
     await s.save();
 
-    // Log to server console only (hidden from UI)
     console.log(`Saved partitions for sweeper=${sweeperId} date=${key} partitions=`, stored);
 
-    // Optionally emit socket for server-side monitoring (not for UI)
     emitEvent("sweeper:partitions-saved", { sweeperId, dateKey: key });
 
     res.json({ success: true, dateKey: key });
@@ -809,11 +1768,6 @@ app.put("/sweepers/:id/partitions", async (req, res) => {
   }
 });
 
-// =======================================================================
-//  NEW: GET partitions for sweeper/date
-//  GET /sweepers/:id/partitions?dateKey=YYYY-MM-DD
-//  If dateKey omitted, returns entire partitions object for sweeper
-// =======================================================================
 app.get("/sweepers/:id/partitions", async (req, res) => {
   try {
     const sweeperId = req.params.id;
@@ -829,7 +1783,6 @@ app.get("/sweepers/:id/partitions", async (req, res) => {
       return res.json({ success: true, dateKey, partitions: partsForDate });
     }
 
-    // return all
     return res.json({ success: true, partitions: s.partitions });
   } catch (err) {
     console.error("Error fetching partitions:", err);
@@ -837,9 +1790,7 @@ app.get("/sweepers/:id/partitions", async (req, res) => {
   }
 });
 
-// =======================================================================
-//  GEOFENCE ROUTES
-// =======================================================================
+// GEOFENCE routes unchanged
 app.post("/geofences", async (req, res) => {
   try {
     const gf = await new Geofence(req.body).save();
@@ -857,6 +1808,7 @@ app.get("/geofences", async (req, res) => {
     res.json({ success: false, message: err.message });
   }
 });
+
 
 // =======================================================================
 //  UPDATE GEOFENCE (NEW)
@@ -889,6 +1841,8 @@ app.put("/geofences/:id", async (req, res) => {
 });
 
 
+
+
 app.get("/geofences/:id", async (req, res) => {
   try {
     const data = await Geofence.findById(req.params.id).lean();
@@ -913,9 +1867,7 @@ app.delete("/geofences/:id", async (req, res) => {
   }
 });
 
-// =======================================================================
-//  START SERVER
-// =======================================================================
+// START SERVER
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () =>
   console.log(`🚀 SERVER + SOCKET.IO RUNNING ON http://0.0.0.0:${PORT}`)
