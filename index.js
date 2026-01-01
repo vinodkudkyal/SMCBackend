@@ -902,6 +902,7 @@ app.delete("/geofences/:id", async (req, res) => {
   }
 });
 
+
 // START SERVER
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () =>

@@ -1,0 +1,168 @@
+const mongoose = require("mongoose");
+
+const MONGO_URI = "mongodb+srv://nagarshuddhismc_db_user:KU0RkVNSLcm23rkc@cluster0.7h8qa0n.mongodb.net/nagarshuddhi? retryWrites=true&w=majority&appName=Cluster0";
+
+const sweeperSchema = new mongoose.Schema({
+  name: String,
+  email: String,
+  password: String,
+  geofence: { type: Array, default: [] },
+  checkpoints: { type: Array, default:  [] },
+  dutyTime: {
+    start: { type: String, default: null },
+    end: { type: String, default: null },
+  },
+  alarmEvents: { type: Object, default: {} },
+  partitions: { type: Object, default: {} },
+});
+
+const eventIndexSchema = new mongoose.Schema({
+  eventId: { type: String, required: true, unique: true, index: true },
+  sweeperId: { type: mongoose.Schema.Types.ObjectId, ref: "Sweeper", required:  true },
+  dateKey: { type: String, required: true },
+  storage: { type: String, enum: ["sweeper", "group", "old"], default: "sweeper" },
+  createdAt: { type: Date, default: Date.now },
+});
+
+const Sweeper = mongoose. model("Sweeper", sweeperSchema);
+const EventIndex = mongoose.model("EventIndex", eventIndexSchema, "eventindexes");
+
+const SWEEPERS = [
+  { id: "68da286c7172c21bf4a37c4d", name: "Akshay kambale" },
+  { id: "68da29947172c21bf4a37c55", name: "Atish kuchekar" },
+  { id: "68e3820ab13dd1153fcf3ef7", name: "tanoj kadam" },
+  { id: "69425c21531fd6f9b6c0bc77", name: "kartik" },
+  { id: "68e37d42b13dd1153fcf3ec1", name: "vicky Ramesh Gaikwad" },
+  { id: "69098f228d240ea50b2c2e5b", name: "Lakhan prabhakar gavli" },
+  { id: "690990278d240ea50b2c2e73", name: "Gangaram Waghmare" },
+  { id: "690994328d240ea50b2c2ec8", name: "Anand Gaikwad" },
+];
+
+const DATES = [
+  "2025-12-15",
+  "2025-12-16",
+  "2025-12-17",
+  "2025-12-18",
+  "2025-12-19",
+  "2025-12-20",
+  "2025-12-21",
+];
+
+function getRandomLocation() {
+  return {
+    latitude: 17.6805 + (Math.random() - 0.5) * 0.01,
+    longitude: 73.9903 + (Math.random() - 0.5) * 0.01,
+  };
+}
+
+async function addDummyData() {
+  try {
+    await mongoose.connect(MONGO_URI);
+    console.log("✅ Connected to MongoDB\n");
+
+    for (const sweeperInfo of SWEEPERS) {
+      console.log(`\n${"=".repeat(60)}`);
+      console.log(`📌 Processing: ${sweeperInfo.name}`);
+      console.log("=".repeat(60));
+
+      const sweeper = await Sweeper.findById(sweeperInfo.id);
+      if (!sweeper) {
+        console.log(`❌ Sweeper not found! `);
+        continue;
+      }
+
+      // Initialize alarmEvents if needed
+      if (!sweeper.alarmEvents) {
+        sweeper.alarmEvents = {};
+      }
+
+      let totalAdded = 0;
+
+      for (const dateStr of DATES) {
+        console.log(`\n📅 Date: ${dateStr}`);
+
+        // Ensure the date key exists
+        if (!sweeper.alarmEvents[dateStr]) {
+          sweeper.alarmEvents[dateStr] = [];
+        }
+
+        // Create 3 events for this day
+        const times = ["08:30:00", "10:15:00", "14:45:00"];
+        const types = ["verified", "missed", "verified"];
+
+        for (let i = 0; i < 3; i++) {
+          const alarmTime = new Date(`${dateStr}T${times[i]}Z`);
+          const alarmTimestampMs = alarmTime.getTime();
+          const eventId = new mongoose.Types.ObjectId().toString();
+
+          let event = {
+            id: eventId,
+            alarmTimestampMs:  alarmTimestampMs,
+            opened: false,
+            openedTimestampMs: null,
+            responseMs: null,
+            verificationTimestampMs: null,
+            verificationStatus: "missed",
+            location: null,
+            withinGeofence: null,
+            createdAt: alarmTime,
+          };
+
+          if (types[i] === "verified") {
+            const location = getRandomLocation();
+            const openTime = alarmTimestampMs + 60000 + Math.random() * 120000;
+            const verifyTime = openTime + 90000 + Math.random() * 180000;
+
+            event.opened = true;
+            event.openedTimestampMs = openTime;
+            event.responseMs = openTime - alarmTimestampMs;
+            event.verificationTimestampMs = verifyTime;
+            event.verificationStatus = "attended";
+            event.location = location;
+            event.withinGeofence = Math.random() > 0.3; // 70% within geofence
+
+            console.log(`   ✅ ${times[i]} - VERIFIED`);
+          } else {
+            console.log(`   ❌ ${times[i]} - MISSED`);
+          }
+
+          sweeper.alarmEvents[dateStr].push(event);
+
+          // Add to EventIndex
+          try {
+            await EventIndex.create({
+              eventId: eventId,
+              sweeperId: sweeper._id,
+              dateKey: dateStr,
+              storage:  "sweeper",
+            });
+          } catch (e) {
+            // Ignore duplicates
+          }
+
+          totalAdded++;
+        }
+      }
+
+      // IMPORTANT: Mark as modified and save
+      sweeper.markModified('alarmEvents');
+      await sweeper.save();
+
+      console.log(`\n✅ Total events added for ${sweeperInfo.name}: ${totalAdded}`);
+    }
+
+    console. log(`\n${"=".repeat(60)}`);
+    console.log("✅ ALL DONE!");
+    console.log("=".repeat(60));
+
+  } catch (error) {
+    console.error("❌ Error:", error. message);
+    console.error(error.stack);
+  } finally {
+    await mongoose.disconnect();
+    console.log("\n🔌 Disconnected from MongoDB");
+    process.exit(0);
+  }
+}
+
+addDummyData();
