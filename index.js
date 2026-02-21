@@ -436,7 +436,7 @@ app.get("/sweepers/:id/attendance", async (req, res) => {
  * - exists within `thresholdMs` of provided alarmTimestampMs AND
  * - not opened AND has no verification timestamp
  */
-function findNearDuplicateEvent(eventsArr, alarmTs, thresholdMs = 5000) {
+function findNearDuplicateEvent(eventsArr, alarmTs, thresholdMs = 1000) {
   if (!Array.isArray(eventsArr)) return null;
   const target = Number(alarmTs || Date.now());
   for (const ev of eventsArr) {
@@ -464,7 +464,8 @@ app.post("/alarm-events", async (req, res) => {
     if (!s.alarmEvents[dateKey]) s.alarmEvents[dateKey] = [];
 
     // De-duplication: if an unopened/unverified event exists within 5s, return it instead of creating a new one.
-    const dup = findNearDuplicateEvent(s.alarmEvents[dateKey], alarmTimestampMs, 5000);
+    // const dup = findNearDuplicateEvent(s.alarmEvents[dateKey], alarmTimestampMs, 1000);
+    const dup = null;
     if (dup) {
       return res.json({ success: true, event: dup, dateKey, deduped: true });
     }
